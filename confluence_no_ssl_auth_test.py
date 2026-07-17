@@ -28,7 +28,35 @@ SPACE_KEY = "ABC"                                   # find in the page URL, e.g.
 # Python doesn't trust by default (even though your browser does).
 #
 # OPTION A (proper fix): if IT gave you a .pem/.crt file for the internal CA,
-# point to it here and leave VERIFY_SSL as True:
+# point to it here and leave VERIFY_SSL as True.
+#
+# Don't have the file yet? You can usually export it yourself:
+#
+#   Method 1 - from your browser (try this first):
+#     1. Open the Confluence page in Chrome or Edge.
+#     2. Click the padlock icon in the address bar > "Connection is secure"
+#        > "Certificate is valid" (wording varies slightly by browser).
+#     3. In the certificate viewer, open the "Certification Path" or
+#        "Certificate hierarchy" tab. This shows a chain, e.g.:
+#            Company Root CA          <- this is the one you want
+#            Company Issuing CA       <- (sometimes present)
+#            confluence.yourcompany.com  (the site cert itself, not this one)
+#     4. Click the TOP-MOST entry (the root, not the site cert) > "Export"
+#        or "Copy to File".
+#     5. Choose "Base-64 encoded X.509 (.CER)" format (same thing as .pem,
+#        just a different extension). Save it, e.g. C:\certs\company-root-ca.pem
+#
+#   Method 2 - from Windows' own certificate store (it's already trusted
+#   there, which is why your browser works):
+#     1. Win + R, type certmgr.msc, Enter.
+#     2. Go to Trusted Root Certification Authorities > Certificates.
+#     3. Find the entry with your company's name.
+#     4. Right-click > All Tasks > Export > "Base-64 encoded X.509".
+#
+#   Neither works? Ask IT: "what's our internal root CA cert, I need the
+#   .pem for a script" - this is a normal, low-friction ask, separate from
+#   needing any admin access to Confluence itself.
+#
 INTERNAL_CA_PATH = None  # e.g. r"C:\certs\company-root-ca.pem"
 VERIFY_SSL = True
 
