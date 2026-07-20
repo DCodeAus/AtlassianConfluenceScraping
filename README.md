@@ -4,3 +4,5 @@ This script set was created to start the scrape of confluence without an admin a
 
 Run confluence auth test python first (make sure you have python on your machine first)
 This will check that you have the access to start scraping your site for download.
+
+This is for when you don't have access to admin the page as admins have left or licence's are limited
