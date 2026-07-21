@@ -1,78 +1,83 @@
-# Confluence Extraction Scripts: README
+# Atlassian Confluence Scraping
 
-## What's in this folder
+Scripts to test and extract access to a self-hosted (Server/Data Center) Confluence instance via its REST API, as a first step toward migrating documentation out to Markdown.
 
-| File | Purpose |
-|---|---|
-| `confluence_auth_test.py` | Tests Confluence REST API access using Python (standard library only, no installs needed) |
-| `confluence_auth_test.ps1` | Same test, written in native PowerShell instead |
-| `first_time_python_in_vscode.md` | General setup guide if Python/VS Code is new to you |
+## ⚠️ Before you use these: don't commit real credentials
 
-Both scripts do the same thing: confirm you can authenticate to Confluence's REST API and pull back one page's title. This is Step 1, proving access works, before building the full 500+ page extractor.
-
----
-
-## ⚠️ Before you do anything: don't leave your password in these files
-
-Both scripts currently have placeholder fields near the top:
+Every script below has placeholder fields near the top, e.g.:
 
 ```python
 USERNAME = "your.username"
 PASSWORD = "your-password"
 ```
 
-**Do not fill these in and then save the file as-is if it's ever going anywhere near version control, a shared drive, email, Teams, or anywhere another person could open it.** A `.py` or `.ps1` file with real credentials sitting in plain text is a genuine security risk, not just a tidiness issue, anyone who opens the file can read them directly.
+**Never fill these in and then commit or push the file with real values in it.** A script with plain-text credentials in a public (or even private) repo is a genuine security risk, anyone with read access to the repo, or anyone who finds it later in commit history, can read them directly, and history keeps old commits around even if you edit the file afterwards.
 
-Safer options once you're past the initial test:
-
-- **Simplest**: fill the credentials in only while testing locally, then clear them back to placeholders before saving or sharing the file again.
-- **Better**: read credentials from environment variables instead of hardcoding them, so the file itself never contains anything sensitive:
+Recommended approach:
+- Fill in credentials only in a local, untracked copy, never the version that gets committed.
+- Better: load credentials from environment variables instead of hardcoding them:
   - Python: `import os` then `USERNAME = os.environ["CONFLUENCE_USER"]`
   - PowerShell: `$Username = $env:CONFLUENCE_USER`
-  
-  You'd set these once in your terminal session or system environment variables, outside the script entirely.
-- **If this ever goes into a shared repo** (e.g. your team project's Git repo): add these filenames to `.gitignore`, or better, never let a filled-in copy touch Git at all, only the placeholder template version.
+- Add a `.gitignore` entry for any local copy with real values filled in, if you keep one on disk.
+- If credentials were ever committed by mistake, treat that password as compromised and change it, scrubbing it from git history alone isn't sufficient once it's been pushed.
 
-If you've already saved a copy somewhere with real credentials in it, worth deleting that copy and treating the password as something to change, same as you would for any other exposed credential.
+## Files
 
----
-
-## Which script should I use?
-
-- **Python not working in your terminal, but PowerShell is?** Use `confluence_auth_test.ps1`, it needs no separate install and reads Windows' certificate store automatically.
-- **Building the full 500+ page extractor later?** Python's the better long-term choice, easier JSON handling for looping through hundreds of pages, downloading attachments, and converting to Markdown afterward.
-- **Not sure?** Run whichever one works first, they test the exact same thing.
-
----
-
-## Quick start
-
-**Python:**
-```
-python confluence_auth_test.py
-```
-
-**PowerShell:**
-```
-.\confluence_auth_test.ps1
-```
-
-Both need four values filled in near the top of the file: `BASE_URL`, `USERNAME`, `PASSWORD`, `SPACE_KEY` (see `first_time_python_in_vscode.md` or ask if you're not sure where to find any of these).
-
----
-
-## If you hit an error
-
-| Error | Likely cause |
+| File | Description |
 |---|---|
-| SSL certificate verify failed | Internal CA cert isn't trusted yet, see the instructions inside `confluence_auth_test.py` above `INTERNAL_CA_PATH` |
-| 401 Unauthorized | Wrong credentials, or your org's API requires SSO rather than basic auth |
-| 403 Forbidden | Credentials are correct, but you don't have read access to that space |
-| "python is not recognised" | PATH issue, see `first_time_python_in_vscode.md` |
-| "running scripts is disabled" (PowerShell) | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` as yourself, no admin needed |
+| `confluence_auth_test.py` | Auth test using Python's standard library only (`urllib`, `base64`, `json`, `ssl`). No `pip install` required. Includes configurable SSL handling for internal/self-signed certificate authorities. |
+| `confluence_no_ssl_auth_test.py` | Variant of the above for environments where SSL certificate verification needs to be bypassed for testing (e.g. internal CA not yet trusted locally). Intended for short-term testing only, not for long-term or credential-handling use. |
+| `confluence_auth_test_no_imports.py` | Minimal-dependency variant for testing basic API access. |
+| `confluence_auth_test.ps1` | Native PowerShell equivalent of the auth test. No separate install needed, and reads trusted certificates directly from the Windows certificate store rather than needing a manually specified `.pem` path. |
+| `runningPythonScriptsInVSCode.md` | Setup guide for running Python scripts in VS Code, including common first-time issues (PATH not recognised, scripts not running from the integrated terminal, selecting the correct interpreter). |
 
----
+## What these scripts do
 
-## Once the test succeeds
+Each auth test script:
+1. Builds a Basic Auth header from a username and password (the same credentials used to log into Confluence via browser).
+2. Sends a single request to `/rest/api/content` for a given space, requesting one page.
+3. Prints the page title on success, or a specific message for common failure cases (401 Unauthorized, 403 Forbidden, SSL certificate errors, connection failures).
 
-Come back and we'll build the full extractor: pagination through all pages in the space, saving each page's HTML content and downloading its images, ready for the Markdown conversion step.
+This confirms API access works before building a full extractor that loops through an entire space (500+ pages), pulling page content and attachments for conversion to Markdown.
+
+## Requirements
+
+- **Python scripts**: Python 3.x. No external packages needed, standard library only.
+- **PowerShell script**: Windows PowerShell 5.1 or later (comes preinstalled on Windows). If script execution is blocked, run as yourself (no admin rights required):
+  ```
+  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+  ```
+
+## Setup
+
+1. Clone or download this repo.
+2. Open the relevant script and fill in:
+   - `BASE_URL`, your Confluence server's base URL (no trailing slash)
+   - `USERNAME` / `PASSWORD`, your normal Confluence login credentials
+   - `SPACE_KEY`, found in a page's URL, e.g. `/display/ABC/Page+Title` → `ABC`
+3. Run it:
+   - Python: `python confluence_auth_test.py`
+   - PowerShell: `.\confluence_auth_test.ps1`
+
+New to running Python scripts, or hitting a PATH/terminal issue? See `runningPythonScriptsInVSCode.md`.
+
+## Troubleshooting
+
+| Issue | Cause / fix |
+|---|---|
+| `SSL certificate verify failed` | Confluence server uses an internal CA cert Python doesn't trust by default. Export the cert (browser padlock icon, or `certmgr.msc` on Windows) and point the script's `INTERNAL_CA_PATH` at the exported `.pem` file. See in-script comments for exact steps. `confluence_no_ssl_auth_test.py` bypasses this for quick local testing only. |
+| `401 Unauthorized` | Wrong credentials, or the organisation's API requires SSO rather than Basic Auth. |
+| `403 Forbidden` | Credentials are valid, but the account lacks read access to the specified space. |
+| `python is not recognised` | Python isn't on PATH, or the terminal session predates a Python install. See `runningPythonScriptsInVSCode.md`. |
+| PowerShell: `running scripts is disabled on this system` | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` as yourself. |
+
+## Roadmap
+
+- [x] Authentication test (single page fetch)
+- [ ] Full space extractor: paginate through all pages, save HTML body content, download attachments
+- [ ] HTML → Markdown conversion
+- [ ] Push converted output to destination (Azure DevOps Wiki or SharePoint, pending organisational decision)
+
+## Notes
+
+These scripts use standard REST API GET requests, the same read access level as browsing Confluence normally in a browser. No admin or elevated permissions are required beyond the ability to view the relevant space.
