@@ -29,6 +29,7 @@ Recommended approach:
 | `confluence_no_ssl_auth_test.py` | Variant of the above for environments where SSL certificate verification needs to be bypassed for testing (e.g. internal CA not yet trusted locally). Intended for short-term testing only, not for long-term or credential-handling use. |
 | `confluence_auth_test_no_imports.py` | Minimal-dependency variant for testing basic API access. |
 | `confluence_auth_test.ps1` | Native PowerShell equivalent of the auth test. No separate install needed, and reads trusted certificates directly from the Windows certificate store rather than needing a manually specified `.pem` path. |
+| [`confluence_extractor.py`](https://github.com/DCodeAus/AtlassianConfluenceScraping/blob/main/confluence_extractor.py) | Full space extractor. Paginates through every page in a space, saves each page's HTML content and downloads its image attachments into a matching per-page folder, then writes a `manifest.json` for the Markdown conversion step. Standard library only. |
 | `runningPythonScriptsInVSCode.md` | Setup guide for running Python scripts in VS Code, including common first-time issues (PATH not recognised, scripts not running from the integrated terminal, selecting the correct interpreter). |
 
 ## What these scripts do
@@ -74,7 +75,7 @@ New to running Python scripts, or hitting a PATH/terminal issue? See `runningPyt
 ## Roadmap
 
 - [x] Authentication test (single page fetch)
-- [ ] Full space extractor: paginate through all pages, save HTML body content, download attachments
+- [x] Full space extractor: paginate through all pages, save HTML body content, download attachments
 - [ ] HTML → Markdown conversion
 - [ ] Push converted output to destination (Azure DevOps Wiki or SharePoint, pending organisational decision)
 
