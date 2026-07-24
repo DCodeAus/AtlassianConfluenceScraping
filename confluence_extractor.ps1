@@ -11,15 +11,25 @@ DO NOT commit this file with real values filled in. See README.md.
 #>
 
 # --- Fill these in ---
-$BaseUrl = "https://confluence.yourcompany.com"   # no trailing slash
-$Username = "your.username"
-$Password = "your-password"
+$BaseUrl  = "https://confluence.yourcompany.com"   # no trailing slash
 $SpaceKey = "ABC"
 
 $OutputDir = "confluence_export"
 $PageSize = 25
 $RequestDelaySeconds = 0.3
 # ---------------------
+
+# Username and password are asked for at runtime rather than hardcoded,
+# so this file is safe to share without exposing credentials.
+$Username = Read-Host "Confluence username"
+$SecurePassword = Read-Host "Confluence password" -AsSecureString
+
+# Convert the secure string back to plain text only for the moment it's
+# needed to build the auth header. It's held in memory only, never written
+# to disk or displayed on screen.
+$BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+$Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+[System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
 
 $pair = "$($Username):$($Password)"
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($pair)
