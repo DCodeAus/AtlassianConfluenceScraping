@@ -13,10 +13,17 @@ If it prints a page title, you're good to move to the full extractor.
 
 # --- Fill these in ---
 $BaseUrl  = "https://confluence.yourcompany.com"   # no trailing slash
-$Username = "your.username"                         # same as browser login
-$Password = "your-password"                          # same as browser login
 $SpaceKey = "ABC"                                    # find in the page URL, e.g. /display/ABC/Page+Title
 # ---------------------
+
+# Username and password are asked for at runtime rather than hardcoded,
+# so this file is safe to share without exposing credentials.
+$Username = Read-Host "Confluence username"
+$SecurePassword = Read-Host "Confluence password" -AsSecureString
+
+$BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+$Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+[System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
 
 # Build the Basic Auth header manually (same approach as the Python version)
 $pair = "$($Username):$($Password)"
