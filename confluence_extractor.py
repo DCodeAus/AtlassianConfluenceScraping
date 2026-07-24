@@ -13,6 +13,7 @@ in this repo for the recommended environment-variable approach.
 """
 
 import base64
+import getpass
 import json
 import os
 import ssl
@@ -26,9 +27,12 @@ import urllib.request
 # INTERNAL_CA_PATH if you hit an SSL certificate error)
 # ============================================================
 BASE_URL = "https://confluence.yourcompany.com"   # no trailing slash
-USERNAME = "your.username"
-PASSWORD = "your-password"
 SPACE_KEY = "ABC"
+
+# Username and password are asked for at runtime rather than hardcoded,
+# so this file is safe to share without exposing credentials.
+USERNAME = input("Confluence username: ")
+PASSWORD = getpass.getpass("Confluence password: ")   # input is hidden, not echoed to screen
 
 INTERNAL_CA_PATH = None   # e.g. r"C:\certs\company-root-ca.pem"
 VERIFY_SSL = True
