@@ -2,6 +2,9 @@
 
 Scripts to test and extract access to a self-hosted (Server/Data Center) Confluence instance via its REST API, as a first step toward migrating documentation out to Markdown.
 
+Flips back and forth between Python and Powershell, most users can use powershell without Admin, corporate or restricted laptops may have an issue with Python if not a developer and I dont want to package anything up that could make your secure machine vunerable with the state of IT at the moment. The case of least access in Cyber terms
+
+
 ## Credentials: prompted at runtime, never hardcoded
 
 None of these scripts store a username or password in the file. Running any of them prompts you interactively:
