@@ -1,89 +1,111 @@
 # Atlassian Confluence Scraping
 
-Scripts to test and extract access to a self-hosted (Server/Data Center) Confluence instance via its REST API, as a first step toward migrating documentation out to Markdown.
+Pulls documentation out of a self-hosted Confluence instance and turns it into Markdown, ready to land in Azure DevOps Wiki or SharePoint. Built this because I needed to shift 500+ pages out of Confluence with no admin access, just an ordinary read login.
 
-Flips back and forth between Python and Powershell, most users can use powershell without Admin, corporate or restricted laptops may have an issue with Python if not a developer and I dont want to package anything up that could make your secure machine vunerable with the state of IT at the moment. The case of least access in Cyber terms
+The pipeline goes: test you can actually connect → pull every page down → convert it all to Markdown → check it'll actually upload without falling over on file name limits.
 
+## Credentials, don't worry about them
 
-## Credentials: prompted at runtime, never hardcoded
-
-None of these scripts store a username or password in the file. Running any of them prompts you interactively:
+None of these scripts have a username or password sitting in the file. Run any of them and they'll just ask:
 
 ```
 Confluence username: dan.smith
 Confluence password: ****
 ```
 
-- Python scripts use `input()` for the username and `getpass.getpass()` for the password, hidden input, standard library only.
-- PowerShell scripts use `Read-Host` for the username and `Read-Host -AsSecureString` for the password, masked input.
+Python scripts hide the password using `getpass`, PowerShell scripts do the same with `Read-Host -AsSecureString`. Either way, nothing gets written to disk, logged anywhere, or shown on screen. That means you can hand this whole repo to someone else, or commit it, without worrying about leaking anything, there's nothing sensitive baked in to begin with.
 
-Nothing is written to disk, logged, or displayed. This means the scripts are safe to commit and share as-is, there's nothing sensitive in them to begin with.
+If you ever want to automate this properly (a scheduled job, say) where being asked for a password every time isn't practical, pull it from an environment variable instead. Just don't ever go hardcoding it in the file.
 
-If you ever add automation on top of these (e.g. a scheduled task) where interactive prompts aren't practical, use environment variables instead of hardcoding, never commit the filled-in values:
-- Python: `import os` then `USERNAME = os.environ["CONFLUENCE_USER"]`
-- PowerShell: `$Username = $env:CONFLUENCE_USER`
+## What's in here
 
-If credentials were ever hardcoded and committed in an earlier version of a file, treat that password as compromised and change it, scrubbing it from git history alone isn't sufficient once it's been pushed.
-
-## Files
-
-| File | Description |
+| File | What it does |
 |---|---|
-| `confluence_auth_test.py` | Auth test using Python's standard library only (`urllib`, `base64`, `json`, `ssl`, `getpass`). No `pip install` required. Includes configurable SSL handling for internal/self-signed certificate authorities. Prompts for credentials at runtime. |
-| `confluence_auth_test.ps1` | Native PowerShell equivalent of the auth test. No separate install needed, and reads trusted certificates directly from the Windows certificate store, no manual `.pem` path required. Prompts for credentials at runtime. |
-| `confluence_extractor.py` | Full space extractor (Python). Paginates through every page in a space, saves each page's HTML content and downloads its image attachments into a matching per-page folder, then writes a `manifest.json` for the Markdown conversion step. Standard library only. Prompts for credentials at runtime. |
-| `confluence_extractor.ps1` | Full space extractor (PowerShell), same behaviour and output structure as the Python version above. Use this one if your organisation's internal CA certificate causes verification failures in Python but works fine in PowerShell. Prompts for credentials at runtime. |
-| `runningPythonScriptsInVSCode.md` | Setup guide for running Python scripts in VS Code, including common first-time issues (PATH not recognised, scripts not running from the integrated terminal, selecting the correct interpreter). |
+| `confluence_auth_test.py` | Quick check that you can actually talk to the Confluence API. Python standard library only, nothing to install. Handles internal/self-signed SSL certs too. |
+| `confluence_auth_test.ps1` | Same test, PowerShell version. No install needed, and it trusts whatever certs Windows already trusts, so it sidesteps SSL hassles the Python version can hit. |
+| `confluence_extractor.py` | The real extraction: walks every page in a space, saves the HTML, grabs every image, writes a manifest so the next step knows what's there. |
+| `confluence_extractor.ps1` | Same extractor, PowerShell version. Use this one if Python keeps tripping over the org's certificate. |
+| `confluence_html_to_markdown.ps1` | Takes everything the extractor pulled and turns it into proper Markdown, images and all, with a built-in check for Azure/SharePoint file name limits. |
+| `runningPythonScriptsInVSCode.md` | If Python in VS Code is giving you grief (PATH errors, nothing happening when you hit run), this walks through it. |
 
-> **Note:** `confluence_no_ssl_auth_test.py` and `confluence_auth_test_no_imports.py` were earlier working variants created while iterating on SSL/cert handling. Their content has since been folded into `confluence_auth_test.py` above. They're kept for reference but aren't the ones to use going forward, if still present in the repo, they're due for cleanup.
+A couple of older files (`confluence_no_ssl_auth_test.py`, `confluence_auth_test_no_imports.py`) were working drafts from while I was sorting out the SSL cert issue. Everything useful from them is now folded into `confluence_auth_test.py`, so they're just clutter at this point, safe to delete.
 
-## What these scripts do
+## How the auth test works
 
-Each auth test script:
-1. Builds a Basic Auth header from a username and password (the same credentials used to log into Confluence via browser).
-2. Sends a single request to `/rest/api/content` for a given space, requesting one page.
-3. Prints the page title on success, or a specific message for common failure cases (401 Unauthorized, 403 Forbidden, SSL certificate errors, connection failures).
+It logs in with your normal Confluence username and password, asks for one page from whichever space you point it at, and tells you straight away whether that worked. If it did, you're clear to run the real extractor. If you get a 401 or 403 or an SSL error, it'll tell you which and point at the fix, see Troubleshooting below.
 
-This confirms API access works before building a full extractor that loops through an entire space (500+ pages), pulling page content and attachments for conversion to Markdown.
+Worth running this before touching the full extractor, no point discovering an auth problem 200 pages into a 500-page run.
 
-## Requirements
+## Pulling everything down
 
-- **Python scripts**: Python 3.x. No external packages needed, standard library only.
-- **PowerShell script**: Windows PowerShell 5.1 or later (comes preinstalled on Windows). If script execution is blocked, run as yourself (no admin rights required):
+Once the auth test passes, run the matching extractor (`confluence_extractor.py` or `.ps1`, whichever worked for you). It'll ask for your `BASE_URL` and `SPACE_KEY` if you haven't set them, then start working through every page in that space, saving the content and downloading images as it goes. For 500+ pages this'll take a few minutes, that's normal, not a hang, you'll see progress printed as `[142/500] Page Title`.
+
+If a page fails partway through (odd permissions, a network blip), it won't kill the whole run, that page just gets logged to `failures.json` at the end so you can look at it separately.
+
+Everything lands in a `confluence_export` folder, one subfolder per page, each with its own `content.html` and `images/`.
+
+## Turning it into Markdown
+
+Once you've got a `confluence_export` folder full of pages, run:
+
+```
+.\confluence_html_to_markdown.ps1
+```
+
+It reads the manifest, converts each page's HTML into real Markdown (headings, bold, links, lists, tables, code blocks, info panels, the lot), and writes it all into a fresh `confluence_markdown_export` folder that mirrors the same structure, images copied in alongside. Your original `confluence_export` is left completely alone, so if something needs fixing you can just re-run the conversion without going back to Confluence.
+
+If it hits a Confluence macro it doesn't recognise (a page tree, a Jira embed, something obscure), it doesn't just drop the content, it keeps whatever text was visible and flags the spot with a comment (`<!-- unrecognised macro: ... -->`) so you can go back and check it manually.
+
+**Before it finishes, it'll ask where this is headed:**
+
+```
+Righto, where's this markdown export headed?
+  1. Azure DevOps Wiki
+  2. SharePoint
+  3. Dunno / not fussed, skip this check
+```
+
+Pick 1 or 2 and it checks every page's file path against that platform's actual limits, Azure caps out at 235 characters total and turns spaces into hyphens, SharePoint's more generous at 400 characters but blocks a different set of characters. Anything too long gets flagged, and it'll offer to shorten the file names automatically so nothing fails on upload. You can also paste in the real destination URL for a precise check, or skip that and get an estimate instead, either way it tells you plainly which one you're getting.
+
+Didn't decide on a destination yet? Pick 3 and it skips the check entirely.
+
+## What you need installed
+
+- **Python scripts**: just Python 3. Nothing to `pip install`, everything's standard library.
+- **PowerShell scripts**: Windows PowerShell 5.1, which is already on any Windows machine. If it refuses to run with a "scripts are disabled" error, run this once as yourself (no admin needed):
   ```
   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
   ```
 
-## Setup
+## Getting started
 
-1. Clone or download this repo.
-2. Open the relevant script and fill in the two non-sensitive values near the top:
-   - `BASE_URL`, your Confluence server's base URL (no trailing slash)
-   - `SPACE_KEY`, found in a page's URL, e.g. `/display/ABC/Page+Title` → `ABC`
-3. Run it, you'll be prompted for your username and password interactively, nothing to fill in for those:
+1. Grab this repo.
+2. Open whichever script you're starting with and fill in `BASE_URL` and `SPACE_KEY` near the top, that's it, nothing sensitive to type in.
+3. Run it:
    - Python: `python confluence_auth_test.py`
    - PowerShell: `.\confluence_auth_test.ps1`
+4. You'll be prompted for your username and password when it runs.
 
-New to running Python scripts, or hitting a PATH/terminal issue? See `runningPythonScriptsInVSCode.md`.
+First time running Python, or having trouble with VS Code's terminal? `runningPythonScriptsInVSCode.md` covers the common gotchas.
 
-## Troubleshooting
+## When something goes wrong
 
-| Issue | Cause / fix |
+| What you're seeing | What's actually going on |
 |---|---|
-| `SSL certificate verify failed` | Confluence server uses an internal CA cert Python doesn't trust by default. Export the cert (browser padlock icon, or `certmgr.msc` on Windows, if not blocked by policy) and point the script's `INTERNAL_CA_PATH` at the exported `.pem` file. See in-script comments for exact steps. |
-| `Basic constraints of CA cert marked not critical` | The organisation's CA certificate itself is missing a flag (`critical`) that Python's SSL library enforces strictly, even though browsers and PowerShell are lenient about it. Not something you can fix client-side. Short-term workaround: set `VERIFY_SSL = False` in the script (test/internal-network use only, disables certificate verification entirely). Longer-term: worth flagging to IT that the internal CA cert isn't fully RFC-compliant. Alternatively, use the `.ps1` version of the script, PowerShell reads the Windows certificate store directly and isn't affected by this. |
-| `401 Unauthorized` | Wrong credentials, or the organisation's API requires SSO rather than Basic Auth. |
-| `403 Forbidden` | Credentials are valid, but the account lacks read access to the specified space. |
-| `python is not recognised` | Python isn't on PATH, or the terminal session predates a Python install. See `runningPythonScriptsInVSCode.md`. |
-| PowerShell: `running scripts is disabled on this system` | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` as yourself. |
+| `SSL certificate verify failed` | Confluence is using an internal cert Python doesn't automatically trust. Export it (browser padlock icon, or `certmgr.msc` if that's not locked down) and point `INTERNAL_CA_PATH` in the script at the exported file. Full steps are in the script's own comments. |
+| `Basic constraints of CA cert marked not critical` | This one's not on you, the org's cert itself is missing a flag Python's SSL library insists on, even though browsers and PowerShell don't care. Quickest fix is switching to the `.ps1` version, which doesn't hit this at all. Or set `VERIFY_SSL = False` for a short-term test, not something to leave on permanently. |
+| `401 Unauthorized` | Wrong username/password, or the org's set up SSO in a way that blocks plain API logins. |
+| `403 Forbidden` | Login's fine, you just don't have read access to that particular space. |
+| `python is not recognised` | Python's not on PATH, or your terminal was open before Python got installed. See the VS Code guide. |
+| PowerShell won't run the script at all | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, run as yourself, no admin needed. |
 
-## Roadmap
+## Where things stand
 
-- [x] Authentication test (single page fetch)
-- [x] Full space extractor: paginate through all pages, save HTML body content, download attachments
-- [ ] HTML → Markdown conversion
-- [ ] Push converted output to destination (Azure DevOps Wiki or SharePoint, pending organisational decision)
+- [x] Confirming access actually works
+- [x] Pulling every page down, content and images
+- [x] Converting it all to Markdown, with the Azure/SharePoint length check
+- [ ] Actually pushing the converted files into Azure DevOps Wiki or SharePoint, still waiting on which one it's going to be
 
-## Notes
+## One more thing
 
-These scripts use standard REST API GET requests, the same read access level as browsing Confluence normally in a browser. No admin or elevated permissions are required beyond the ability to view the relevant space.
+All of this uses the same read access you already have browsing Confluence normally, nothing here needs admin rights or anything elevated, just the ability to open the pages and access to the space you want to grab pages from in the first place.
