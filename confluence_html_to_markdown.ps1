@@ -1,11 +1,18 @@
 <#
 Confluence HTML to Markdown converter.
 Reads manifest.json produced by confluence_extractor.ps1, converts each
-page's content.html into a content.md, writing it into a separate output
-folder (confluence_markdown_export) that mirrors the same page structure
-as the original export, complete with each page's images copied alongside
-its markdown. This keeps the converted output self-contained and ready to
-upload, without touching or mixing into the original raw export.
+page's content.html into content.md, and routes the output into one of
+three folders depending on where that specific page is headed:
+
+    confluence_markdown_export/azure/...
+    confluence_markdown_export/sharepoint/...
+    confluence_markdown_export/unsorted/...  (not yet classified)
+
+WHY PER-PAGE ROUTING: some pages are technical docs going to Azure DevOps
+Wiki, others are onboarding/non-technical content going to SharePoint.
+There's no reliable way to guess which is which from the content alone, so
+this script asks you to classify each page once via a CSV file, rather than
+assuming or applying one destination to everything.
 
 No credentials needed, this step is pure local file processing, nothing
 talks to Confluence.
@@ -18,6 +25,7 @@ Optional: edit $exportDir / $markdownExportDir below if your folder names differ
 
 $exportDir = "confluence_export"
 $markdownExportDir = "confluence_markdown_export"
+$classificationPath = Join-Path $exportDir "page_destinations.csv"
 
 $manifestPath = Join-Path $exportDir "manifest.json"
 
@@ -29,10 +37,102 @@ if (-not (Test-Path $manifestPath)) {
 
 $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
 
-# --- XML namespace setup ---
+# ============================================================
+# PER-PAGE DESTINATION CLASSIFICATION
+#
+# WHY THIS EXISTS: this export is going to two different places, technical
+# docs to Azure DevOps Wiki, everything else (onboarding, non-technical) to
+# SharePoint. The script can't reliably tell those apart from content alone,
+# so it asks you to classify each page once, in a plain CSV you can open in
+# Excel, rather than guessing.
+#
+# FIRST RUN: if page_destinations.csv doesn't exist yet, this section
+# creates it (one row per page, id/title/destination, destination left
+# blank) and stops here so you can fill it in. Open it in Excel or any text
+# editor, type "azure" or "sharepoint" in the destination column for each
+# row, save, then run this script again.
+#
+# LATER RUNS: if you add more pages to confluence_export later (re-running
+# the extractor), re-run this script, it'll add any new pages to the CSV
+# with a blank destination without touching rows you've already filled in.
+# ============================================================
+
+function New-ClassificationTemplate {
+    param([array]$pages, [string]$path)
+
+    $rows = foreach ($pageEntry in $pages) {
+        [PSCustomObject]@{
+            id          = $pageEntry.id
+            title       = $pageEntry.title
+            destination = ""
+        }
+    }
+
+    $rows | Export-Csv -Path $path -NoTypeInformation -Encoding UTF8
+}
+
+if (-not (Test-Path $classificationPath)) {
+    Write-Host "First time running this, so no page_destinations.csv yet."
+    Write-Host "Chucking one together now at: $classificationPath"
+
+    New-ClassificationTemplate -pages $manifest -path $classificationPath
+
+    Write-Host "`nRighto, open that file (Excel's fine) and fill in the"
+    Write-Host "'destination' column for every row, azure or sharepoint."
+    Write-Host "Save it, then run this script again and it'll pick up where"
+    Write-Host "you left off."
+    exit 0
+}
+
+# Load whatever's in the CSV already, and add any pages that are in the
+# manifest but missing from the CSV (e.g. new pages from a later extractor
+# run), without touching rows that have already been classified.
+$existingRows = Import-Csv -Path $classificationPath
+$classificationLookup = @{}
+foreach ($row in $existingRows) {
+    $classificationLookup[$row.id] = $row.destination
+}
+
+$newRowsAdded = $false
+$allRows = foreach ($pageEntry in $manifest) {
+    if (-not $classificationLookup.ContainsKey($pageEntry.id)) {
+        $newRowsAdded = $true
+        [PSCustomObject]@{
+            id          = $pageEntry.id
+            title       = $pageEntry.title
+            destination = ""
+        }
+    }
+    else {
+        [PSCustomObject]@{
+            id          = $pageEntry.id
+            title       = $pageEntry.title
+            destination = $classificationLookup[$pageEntry.id]
+        }
+    }
+}
+
+if ($newRowsAdded) {
+    $allRows | Export-Csv -Path $classificationPath -NoTypeInformation -Encoding UTF8
+    Write-Host "Found some new pages since the CSV was last filled in, added"
+    Write-Host "them to $classificationPath with a blank destination."
+    Write-Host "Fill those in and run this again when you're ready."
+    exit 0
+}
+
+# Rebuild the lookup from the (possibly updated) rows, normalising values
+# so "Azure", " azure ", "AZURE" etc all match cleanly.
+$classificationLookup = @{}
+foreach ($row in $allRows) {
+    $classificationLookup[$row.id] = ($row.destination -replace '\s', '').ToLower()
+}
+
+# ============================================================
+# XML NAMESPACE SETUP
 # Confluence storage format uses ac: and ri: prefixes for its own elements
 # (macros, images, attachment references) alongside plain XHTML. We declare
 # those namespaces so the XML parser doesn't choke on them.
+# ============================================================
 $namespaceDeclarations = @'
 xmlns:ac="http://www.atlassian.com/schema/confluence/4/ac/"
 xmlns:ri="http://www.atlassian.com/schema/confluence/4/ri/"
@@ -173,23 +273,36 @@ function Convert-NodeToMarkdown {
     return $stringBuilder.ToString()
 }
 
-# --- Main ---
+# ============================================================
+# MAIN CONVERSION LOOP
+# Each page gets routed into a subfolder matching its classification:
+# azure, sharepoint, or unsorted (if blank or an unrecognised value).
+# ============================================================
 
 $totalPages = $manifest.Count
 $pageIndex = 0
 $conversionWarnings = @()
+$destinationCounts = @{ azure = 0; sharepoint = 0; unsorted = 0 }
 
 foreach ($pageEntry in $manifest) {
     $pageIndex++
     $htmlPath = Join-Path $exportDir (Join-Path $pageEntry.folder $pageEntry.html_file)
 
+    $rawDestination = $classificationLookup[$pageEntry.id]
+    $destinationBucket = if ($rawDestination -eq "azure" -or $rawDestination -eq "sharepoint") {
+        $rawDestination
+    } else {
+        "unsorted"
+    }
+    $destinationCounts[$destinationBucket]++
+
     # Destination folder mirrors the same relative structure as the source
-    # export, but lives under $markdownExportDir instead, kept separate
-    # from the raw HTML/manifest so it's ready to upload as-is.
-    $destinationFolder = Join-Path $markdownExportDir $pageEntry.folder
+    # export, but lives under $markdownExportDir\<bucket> instead, kept
+    # separate from the raw HTML/manifest so it's ready to upload as-is.
+    $destinationFolder = Join-Path $markdownExportDir (Join-Path $destinationBucket $pageEntry.folder)
     $markdownPath = Join-Path $destinationFolder "content.md"
 
-    Write-Host "[$pageIndex/$totalPages] $($pageEntry.title)"
+    Write-Host "[$pageIndex/$totalPages] ($destinationBucket) $($pageEntry.title)"
 
     if (-not (Test-Path $htmlPath)) {
         Write-Host "    Nah, skipped: content.html not found at $htmlPath"
@@ -236,6 +349,14 @@ foreach ($pageEntry in $manifest) {
 }
 
 Write-Host "`nAll done, no worries. Converted $($totalPages - $conversionWarnings.Count) of $totalPages pages."
+Write-Host "  -> $($destinationCounts.azure) heading to Azure DevOps Wiki"
+Write-Host "  -> $($destinationCounts.sharepoint) heading to SharePoint"
+if ($destinationCounts.unsorted -gt 0) {
+    Write-Host "  -> $($destinationCounts.unsorted) still UNSORTED, not classified in the CSV"
+    Write-Host "     These landed in confluence_markdown_export\unsorted\ for now."
+    Write-Host "     Go back to $classificationPath, fill in the blanks, and re-run"
+    Write-Host "     this script to move them into the right spot."
+}
 Write-Host "Output's sitting in: $markdownExportDir\"
 
 if ($conversionWarnings.Count -gt 0) {
@@ -281,9 +402,9 @@ Write-Host "equivalent, so they got left as a comment plus the visible text."
 #     name the way Azure DevOps Wiki does.
 #   Source: Microsoft SharePoint documentation on invalid file/folder names
 #
-# This section only runs if you confirm below that this export is headed
-# to one of these destinations. It does NOT touch confluence_export (the
-# raw source), only the already-converted files in confluence_markdown_export.
+# This runs automatically for whichever destinations actually have pages
+# in this run, no need to ask "which one" any more since that's now
+# decided per page by the CSV.
 # ============================================================
 
 $azureMaxPathLength = 235
@@ -334,122 +455,123 @@ function Test-DestinationPathLength {
     }
 }
 
-Write-Host "`nRighto, where's this markdown export headed?"
-Write-Host "  1. Azure DevOps Wiki"
-Write-Host "  2. SharePoint"
-Write-Host "  3. Dunno / not fussed, skip this check"
-$destinationChoice = Read-Host "Enter 1, 2, or 3"
+function Invoke-DestinationCheck {
+    # Runs the length/naming check for one destination bucket (azure or
+    # sharepoint) against only the pages classified into that bucket.
+    param(
+        [string]$bucket,
+        [string]$destinationName,
+        [int]$maxPathLength,
+        [string]$urlPrompt,
+        [array]$pagesInBucket
+    )
 
-if ($destinationChoice -eq "1" -or $destinationChoice -eq "2") {
-
-    if ($destinationChoice -eq "1") {
-        $destinationName = "Azure DevOps Wiki"
-        $maxPathLength = $azureMaxPathLength
-        $urlPrompt = "Azure DevOps wiki repo URL (e.g. https://dev.azure.com/yourorg/yourproject/_git/yourproject.wiki)"
-    }
-    else {
-        $destinationName = "SharePoint"
-        $maxPathLength = $sharePointMaxPathLength
-        $urlPrompt = "SharePoint document library URL (e.g. https://yourorg.sharepoint.com/sites/YourSite/Shared Documents)"
-    }
-
-    # Ask for the actual destination URL now, before running any check.
-    # The limit applies to the FULL path (site/repo URL + folder path +
-    # file name), so without the real URL the check below is only an
-    # estimate and could miss pages that are actually over the limit once
-    # the real URL is added on top. Getting this right up front is safer
-    # than silently under-counting, especially for someone who might not
-    # know to double-check this themselves later.
-    Write-Host "`nFor a proper accurate check, chuck in the $urlPrompt."
+    Write-Host "`n--- $destinationName ($($pagesInBucket.Count) pages) ---"
+    Write-Host "For a proper accurate check, chuck in the $urlPrompt."
     $destinationUrlPrefix = Read-Host "URL (leave it blank if you want a rough estimate instead)"
 
     if (-not $destinationUrlPrefix) {
-        Write-Host "`nFair enough, no URL. Carrying on with a ROUGH ESTIMATE based on"
+        Write-Host "Fair enough, no URL. Carrying on with a ROUGH ESTIMATE based on"
         Write-Host "folder path and file name only. This'll under-count the real"
         Write-Host "length, so pages sitting close to the limit might still fall over"
-        Write-Host "on upload even if this check reckons they're fine. Run it again"
-        Write-Host "with the real URL if you want to be dead certain."
+        Write-Host "on upload even if this check reckons they're fine."
     }
 
-    Write-Host "`nHaving a look through page paths against $destinationName's $maxPathLength character limit..."
     $affectedPages = @()
 
-    foreach ($pageEntry in $manifest) {
-        $destinationFileName = if ($destinationChoice -eq "1") {
+    foreach ($pageEntry in $pagesInBucket) {
+        $destinationFileName = if ($bucket -eq "azure") {
             ConvertTo-AzureWikiFileName $pageEntry.title
         } else {
             ConvertTo-SharePointFileName $pageEntry.title
         }
 
-        $pathCheck = Test-DestinationPathLength -repoUrlPrefix $destinationUrlPrefix -folderPath $pageEntry.folder -fileName $destinationFileName -maxLength $maxPathLength
+        $bucketFolder = Join-Path $bucket $pageEntry.folder
+        $pathCheck = Test-DestinationPathLength -repoUrlPrefix $destinationUrlPrefix -folderPath $bucketFolder -fileName $destinationFileName -maxLength $maxPathLength
 
         if ($pathCheck.OverLimit) {
             $affectedPages += [PSCustomObject]@{
-                Title              = $pageEntry.title
-                Folder             = $pageEntry.folder
+                Title               = $pageEntry.title
+                Folder              = $bucketFolder
                 DestinationFileName = $destinationFileName
-                Length             = $pathCheck.Length
+                Length              = $pathCheck.Length
+                PageId              = $pageEntry.id
             }
         }
     }
 
     if ($affectedPages.Count -eq 0) {
-        Write-Host "She's right, all page paths are within the $maxPathLength character limit. Nothing to fix here."
+        Write-Host "She's right, all $destinationName page paths are within the $maxPathLength character limit."
+        return
     }
-    else {
-        Write-Host "`n$($affectedPages.Count) page(s) are too long for the $maxPathLength character limit:"
-        foreach ($affected in $affectedPages) {
-            Write-Host "  - $($affected.Title) (estimated length: $($affected.Length))"
-        }
 
-        $shouldFix = Read-Host "`nWant these shortened automatically so they're $destinationName-compliant? (y/n)"
+    Write-Host "`n$($affectedPages.Count) page(s) are too long for the $maxPathLength character limit:"
+    foreach ($affected in $affectedPages) {
+        Write-Host "  - $($affected.Title) (estimated length: $($affected.Length))"
+    }
 
-        if ($shouldFix -eq "y") {
-            Write-Host "`nRighto, shortening the affected file names..."
+    $shouldFix = Read-Host "`nWant these shortened automatically so they're $destinationName-compliant? (y/n)"
 
-            foreach ($affected in $affectedPages) {
-                # Work out how much needs to be trimmed off the title
-                # portion of the file name to fit under the limit, keeping
-                # a safety margin and appending a short unique suffix so
-                # two shortened titles don't collide with each other.
-                $pageEntry = $manifest | Where-Object { $_.folder -eq $affected.Folder } | Select-Object -First 1
-                $uniqueSuffix = "-$($pageEntry.id)"
-                $overshoot = $affected.Length - $maxPathLength
-                $charsToTrim = $overshoot + $uniqueSuffix.Length + 5   # small safety margin
+    if ($shouldFix -ne "y") {
+        Write-Host "`nFair enough, left as-is. These pages will probably fall over on"
+        Write-Host "upload to $destinationName though, worth a look before you push."
+        return
+    }
 
-                $originalName = $affected.DestinationFileName -replace '\.md$', ''
-                $trimLength = [Math]::Max(1, $originalName.Length - $charsToTrim)
-                $shortenedName = $originalName.Substring(0, $trimLength) + $uniqueSuffix + ".md"
+    Write-Host "`nRighto, shortening the affected file names..."
 
-                $destinationFolder = Join-Path $markdownExportDir $affected.Folder
-                $currentMarkdownPath = Join-Path $destinationFolder "content.md"
-                $newMarkdownPath = Join-Path $destinationFolder $shortenedName
+    foreach ($affected in $affectedPages) {
+        # Work out how much needs to be trimmed off the title portion of
+        # the file name to fit under the limit, keeping a safety margin
+        # and appending a short unique suffix so two shortened titles
+        # don't collide with each other.
+        $uniqueSuffix = "-$($affected.PageId)"
+        $overshoot = $affected.Length - $maxPathLength
+        $charsToTrim = $overshoot + $uniqueSuffix.Length + 5   # small safety margin
 
-                if (Test-Path $currentMarkdownPath) {
-                    Rename-Item -Path $currentMarkdownPath -NewName $shortenedName -Force
-                    Write-Host "  Sorted: $($affected.Title)"
-                    Write-Host "    -> $shortenedName"
-                }
-                else {
-                    Write-Host "  Skipped, couldn't find the file (maybe already renamed): $($affected.Title)"
-                }
-            }
+        $originalName = $affected.DestinationFileName -replace '\.md$', ''
+        $trimLength = [Math]::Max(1, $originalName.Length - $charsToTrim)
+        $shortenedName = $originalName.Substring(0, $trimLength) + $uniqueSuffix + ".md"
 
-            Write-Host "`nToo easy, done. Affected files renamed to $destinationName-compliant names."
-            if ($destinationChoice -eq "1") {
-                Write-Host "Heads up: these renamed files no longer follow Azure's exact"
-                Write-Host "title-to-filename convention (hyphenated title), since they've"
-                Write-Host "been trimmed down. When you create the page in Azure DevOps Wiki,"
-                Write-Host "you might want to set a friendlier page title in the wiki UI"
-                Write-Host "even though the underlying file name stays short."
-            }
+        $destinationFolder = Join-Path $markdownExportDir $affected.Folder
+        $currentMarkdownPath = Join-Path $destinationFolder "content.md"
+
+        if (Test-Path $currentMarkdownPath) {
+            Rename-Item -Path $currentMarkdownPath -NewName $shortenedName -Force
+            Write-Host "  Sorted: $($affected.Title)"
+            Write-Host "    -> $shortenedName"
         }
         else {
-            Write-Host "`nFair enough, left as-is. These pages will probably fall over on"
-            Write-Host "upload to $destinationName though, worth a look before you push."
+            Write-Host "  Skipped, couldn't find the file (maybe already renamed): $($affected.Title)"
         }
     }
+
+    Write-Host "`nToo easy, done. Affected files renamed to $destinationName-compliant names."
+    if ($bucket -eq "azure") {
+        Write-Host "Heads up: these renamed files no longer follow Azure's exact"
+        Write-Host "title-to-filename convention (hyphenated title), since they've"
+        Write-Host "been trimmed down. When you create the page in Azure DevOps Wiki,"
+        Write-Host "you might want to set a friendlier page title in the wiki UI"
+        Write-Host "even though the underlying file name stays short."
+    }
+}
+
+$azurePages = $manifest | Where-Object { $classificationLookup[$_.id] -eq "azure" }
+$sharePointPages = $manifest | Where-Object { $classificationLookup[$_.id] -eq "sharepoint" }
+
+if ($azurePages.Count -eq 0 -and $sharePointPages.Count -eq 0) {
+    Write-Host "`nNo pages classified as azure or sharepoint yet, skipping the length check."
 }
 else {
-    Write-Host "`nNo dramas, skipping the destination path length check."
+    if ($azurePages.Count -gt 0) {
+        Invoke-DestinationCheck -bucket "azure" -destinationName "Azure DevOps Wiki" -maxPathLength $azureMaxPathLength `
+            -urlPrompt "Azure DevOps wiki repo URL (e.g. https://dev.azure.com/yourorg/yourproject/_git/yourproject.wiki)" `
+            -pagesInBucket $azurePages
+    }
+
+    if ($sharePointPages.Count -gt 0) {
+        Invoke-DestinationCheck -bucket "sharepoint" -destinationName "SharePoint" -maxPathLength $sharePointMaxPathLength `
+            -urlPrompt "SharePoint document library URL (e.g. https://yourorg.sharepoint.com/sites/YourSite/Shared Documents)" `
+            -pagesInBucket $sharePointPages
+    }
 }
