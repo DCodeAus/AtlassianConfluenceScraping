@@ -15,7 +15,7 @@ Confluence password: ****
 
 Python scripts hide the password using `getpass`, PowerShell scripts do the same with `Read-Host -AsSecureString`. Either way, nothing gets written to disk, logged anywhere, or shown on screen. That means you can hand this whole repo to someone else, or commit it, without worrying about leaking anything, there's nothing sensitive baked in to begin with.
 
-If you ever want to automate this properly (a scheduled job, say) where being asked for a password every time isn't practical, pull it from an environment variable instead. Just don't ever go hardcoding it in the file.
+If you ever want to automate this properly (a scheduled job, say) where being asked for a password every time isn't practical, set `CONFLUENCE_USERNAME` and `CONFLUENCE_PASSWORD` as environment variables before running the script and the prompts are skipped. Just don't ever go hardcoding it in the file.
 
 ## What's in here
 
@@ -26,6 +26,7 @@ If you ever want to automate this properly (a scheduled job, say) where being as
 | `confluence_extractor.py` | The real extraction: walks every page in a space, saves the HTML, grabs every image, writes a manifest so the next step knows what's there. |
 | `confluence_extractor.ps1` | Same extractor, PowerShell version. Use this one if Python keeps tripping over the org's certificate. |
 | `confluence_html_to_markdown.ps1` | Takes everything the extractor pulled and turns it into proper Markdown, images and all, with a built-in check for Azure/SharePoint file name limits. |
+| `confluence_html_to_markdown.py` | Same conversion, Python standard library only. Use this one if you don't have PowerShell (e.g. extracted on Mac/Linux). |
 | `runningPythonScriptsInVSCode.md` | If Python in VS Code is giving you grief (PATH errors, nothing happening when you hit run), this walks through it. |
 
 A couple of older files (`confluence_no_ssl_auth_test.py`, `confluence_auth_test_no_imports.py`) were working drafts from while I was sorting out the SSL cert issue. Everything useful from them is now folded into `confluence_auth_test.py`, so they're just clutter at this point, safe to delete.
@@ -51,8 +52,12 @@ Once you've got a `confluence_export` folder full of pages, run:
 ```
 .\confluence_html_to_markdown.ps1
 ```
+or, if you don't have PowerShell:
+```
+python confluence_html_to_markdown.py
+```
 
-It reads the manifest, converts each page's HTML into real Markdown (headings, bold, links, lists, tables, code blocks, info panels, the lot), and writes it all into a fresh `confluence_markdown_export` folder that mirrors the same structure, images copied in alongside. Your original `confluence_export` is left completely alone, so if something needs fixing you can just re-run the conversion without going back to Confluence.
+Both do the same thing, pick whichever's available. It reads the manifest, converts each page's HTML into real Markdown (headings, bold, links, lists, tables, code blocks, info panels, the lot), and writes it all into a fresh `confluence_markdown_export` folder that mirrors the same structure, images copied in alongside. Your original `confluence_export` is left completely alone, so if something needs fixing you can just re-run the conversion without going back to Confluence.
 
 If it hits a Confluence macro it doesn't recognise (a page tree, a Jira embed, something obscure), it doesn't just drop the content, it keeps whatever text was visible and flags the spot with a comment (`<!-- unrecognised macro: ... -->`) so you can go back and check it manually.
 

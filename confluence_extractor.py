@@ -30,9 +30,12 @@ BASE_URL = "https://confluence.yourcompany.com"   # no trailing slash
 SPACE_KEY = "ABC"
 
 # Username and password are asked for at runtime rather than hardcoded,
-# so this file is safe to share without exposing credentials.
-USERNAME = input("Confluence username: ")
-PASSWORD = getpass.getpass("Confluence password: ")   # input is hidden, not echoed to screen
+# so this file is safe to share without exposing credentials. If you're
+# automating this (e.g. a scheduled job), set CONFLUENCE_USERNAME and
+# CONFLUENCE_PASSWORD as environment variables instead and the prompts
+# below are skipped.
+USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input("Confluence username: ")
+PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass.getpass("Confluence password: ")   # input is hidden, not echoed to screen
 
 INTERNAL_CA_PATH = None   # e.g. r"C:\certs\company-root-ca.pem"
 VERIFY_SSL = True
@@ -95,6 +98,22 @@ def sanitise_filename(name):
     for ch in invalid_chars:
         name = name.replace(ch, "_")
     return name.strip()
+
+
+def make_unique_filename(name, used_names):
+    """Appends a numeric suffix if this name was already used on the same page,
+    so two attachments that sanitise to the same name don't overwrite each other."""
+    if name not in used_names:
+        used_names.add(name)
+        return name
+
+    root, ext = os.path.splitext(name)
+    counter = 2
+    while f"{root}_{counter}{ext}" in used_names:
+        counter += 1
+    unique_name = f"{root}_{counter}{ext}"
+    used_names.add(unique_name)
+    return unique_name
 
 
 def get_all_pages_in_space():
@@ -185,11 +204,12 @@ def main():
             if attachments:
                 images_folder = os.path.join(page_folder, "images")
                 os.makedirs(images_folder, exist_ok=True)
+                used_attachment_names = set()
 
                 for attachment in attachments:
                     att_title = attachment["title"]
                     download_link = attachment["_links"]["download"]
-                    safe_att_name = sanitise_filename(att_title)
+                    safe_att_name = make_unique_filename(sanitise_filename(att_title), used_attachment_names)
                     dest_path = os.path.join(images_folder, safe_att_name)
 
                     try:

@@ -117,7 +117,7 @@ function Convert-NodeToMarkdown {
                 }
             }
 
-            "ac:image" {
+            "image" {
                 # Confluence image, either an attachment reference or an external URL
                 $attachmentRef = $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "attachment" } | Select-Object -First 1
                 $urlRef = $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "url" } | Select-Object -First 1
@@ -136,7 +136,7 @@ function Convert-NodeToMarkdown {
                 }
             }
 
-            "ac:structured-macro" {
+            "structured-macro" {
                 $macroNameAttribute = $childNode.Attributes() | Where-Object { $_.Name.LocalName -eq "name" } | Select-Object -First 1
                 $macroName = if ($macroNameAttribute) { $macroNameAttribute.Value } else { "unknown" }
 

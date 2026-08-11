@@ -12,6 +12,7 @@ If you get 401/403, see the troubleshooting notes at the bottom.
 import base64
 import getpass
 import json
+import os
 import ssl
 import urllib.request
 import urllib.parse
@@ -22,9 +23,12 @@ BASE_URL = "https://confluence.yourcompany.com"   # no trailing slash
 SPACE_KEY = "ABC"                                   # find in the page URL, e.g. /display/ABC/Page+Title
 
 # Username and password are asked for at runtime rather than hardcoded,
-# so this file is safe to share without exposing credentials.
-USERNAME = input("Confluence username: ")
-PASSWORD = getpass.getpass("Confluence password: ")   # input is hidden, not echoed to screen
+# so this file is safe to share without exposing credentials. If you're
+# automating this (e.g. a scheduled job), set CONFLUENCE_USERNAME and
+# CONFLUENCE_PASSWORD as environment variables instead and the prompts
+# below are skipped.
+USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input("Confluence username: ")
+PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass.getpass("Confluence password: ")   # input is hidden, not echoed to screen
 
 # --- SSL certificate handling ---
 # Got "SSL certificate verify failed"? Your Confluence server likely uses a

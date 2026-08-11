@@ -20,16 +20,24 @@ $RequestDelaySeconds = 0.3
 # ---------------------
 
 # Username and password are asked for at runtime rather than hardcoded,
-# so this file is safe to share without exposing credentials.
-$Username = Read-Host "Confluence username"
-$SecurePassword = Read-Host "Confluence password" -AsSecureString
+# so this file is safe to share without exposing credentials. If you're
+# automating this (e.g. a scheduled job), set CONFLUENCE_USERNAME and
+# CONFLUENCE_PASSWORD as environment variables instead and the prompts
+# below are skipped.
+$Username = if ($env:CONFLUENCE_USERNAME) { $env:CONFLUENCE_USERNAME } else { Read-Host "Confluence username" }
 
-# Convert the secure string back to plain text only for the moment it's
-# needed to build the auth header. It's held in memory only, never written
-# to disk or displayed on screen.
-$BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
-$Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-[System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+if ($env:CONFLUENCE_PASSWORD) {
+    $Password = $env:CONFLUENCE_PASSWORD
+}
+else {
+    # Convert the secure string back to plain text only for the moment it's
+    # needed to build the auth header. It's held in memory only, never written
+    # to disk or displayed on screen.
+    $SecurePassword = Read-Host "Confluence password" -AsSecureString
+    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+    $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+}
 
 $pair = "$($Username):$($Password)"
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($pair)
@@ -48,6 +56,28 @@ function Get-SanitisedFilename {
         $result = $result.Replace([string]$ch, "_")
     }
     return $result.Trim()
+}
+
+function Get-UniqueFilename {
+    # Appends a numeric suffix if this name was already used on the same page,
+    # so two attachments that sanitise to the same name don't overwrite each other.
+    param([string]$Name, [System.Collections.Generic.HashSet[string]]$UsedNames)
+
+    if (-not $UsedNames.Contains($Name)) {
+        [void]$UsedNames.Add($Name)
+        return $Name
+    }
+
+    $extension = [System.IO.Path]::GetExtension($Name)
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($Name)
+    $counter = 2
+    do {
+        $candidate = "${baseName}_${counter}${extension}"
+        $counter++
+    } while ($UsedNames.Contains($candidate))
+
+    [void]$UsedNames.Add($candidate)
+    return $candidate
 }
 
 function Get-AllPagesInSpace {
@@ -158,11 +188,12 @@ foreach ($page in $pages) {
         if ($attachments.Count -gt 0) {
             $imagesFolder = Join-Path $pageFolder "images"
             New-Item -ItemType Directory -Force -Path $imagesFolder | Out-Null
+            $usedAttachmentNames = [System.Collections.Generic.HashSet[string]]::new()
 
             foreach ($attachment in $attachments) {
                 $attTitle = $attachment.title
                 $downloadLink = $attachment._links.download
-                $safeAttName = Get-SanitisedFilename $attTitle
+                $safeAttName = Get-UniqueFilename (Get-SanitisedFilename $attTitle) $usedAttachmentNames
                 $destPath = Join-Path $imagesFolder $safeAttName
 
                 try {

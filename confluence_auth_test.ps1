@@ -17,13 +17,21 @@ $SpaceKey = "ABC"                                    # find in the page URL, e.g
 # ---------------------
 
 # Username and password are asked for at runtime rather than hardcoded,
-# so this file is safe to share without exposing credentials.
-$Username = Read-Host "Confluence username"
-$SecurePassword = Read-Host "Confluence password" -AsSecureString
+# so this file is safe to share without exposing credentials. If you're
+# automating this (e.g. a scheduled job), set CONFLUENCE_USERNAME and
+# CONFLUENCE_PASSWORD as environment variables instead and the prompts
+# below are skipped.
+$Username = if ($env:CONFLUENCE_USERNAME) { $env:CONFLUENCE_USERNAME } else { Read-Host "Confluence username" }
 
-$BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
-$Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-[System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+if ($env:CONFLUENCE_PASSWORD) {
+    $Password = $env:CONFLUENCE_PASSWORD
+}
+else {
+    $SecurePassword = Read-Host "Confluence password" -AsSecureString
+    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+    $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+}
 
 # Build the Basic Auth header manually (same approach as the Python version)
 $pair = "$($Username):$($Password)"
