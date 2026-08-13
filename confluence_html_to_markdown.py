@@ -25,6 +25,8 @@ Run:
 
 Optional: edit EXPORT_DIR / MARKDOWN_EXPORT_DIR below if your folder names
 differ.
+
+Written by Dan.
 """
 
 import csv

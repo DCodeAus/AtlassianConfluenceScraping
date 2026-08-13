@@ -10,11 +10,11 @@ flowchart TD
 
     C[(confluence_export/<br/>raw HTML, images, manifest.json)] --> D
 
-    D[confluence_html_to_markdown.ps1<br/>first run: generates page_destinations.csv] --> E
+    D[confluence_html_to_markdown.py/.ps1<br/>first run: generates page_destinations.csv] --> E
 
     E{Fill in page_destinations.csv<br/>azure or sharepoint, per page}
 
-    E -->|re-run script| F[confluence_html_to_markdown.ps1<br/>converts HTML to Markdown]
+    E -->|re-run script| F[confluence_html_to_markdown.py/.ps1<br/>converts HTML to Markdown]
 
     F --> G[(confluence_markdown_export/azure/)]
     F --> H[(confluence_markdown_export/sharepoint/)]
@@ -41,7 +41,7 @@ flowchart TD
 `confluence_extractor.py` or `.ps1`. Walks every page in the space, saves the raw HTML content and downloads every image, writes it all into `confluence_export/`, one folder per page, plus a `manifest.json` that lists what's there. If a page fails partway through, it's logged and skipped rather than stopping the whole run.
 
 ### 3. Classify each page
-The first time `confluence_html_to_markdown.ps1` runs, it can't yet convert anything, because it doesn't know which pages are technical (Azure DevOps Wiki) versus everything else (SharePoint). So instead, it generates `page_destinations.csv`, one row per page, and stops. This gets filled in by hand, `azure` or `sharepoint` against each title, since there's no reliable way to guess that from content alone.
+The first time `confluence_html_to_markdown.py` or `.ps1` runs, it can't yet convert anything, because it doesn't know which pages are technical (Azure DevOps Wiki) versus everything else (SharePoint). So instead, it generates `page_destinations.csv`, one row per page, and stops. This gets filled in by hand, `azure` or `sharepoint` against each title, since there's no reliable way to guess that from content alone.
 
 ### 4. Convert to Markdown
 Run the same script again once the CSV's filled in. Each page's HTML gets converted to real Markdown, headings, tables, links, images, code blocks, the lot, and routed into `confluence_markdown_export/azure/`, `.../sharepoint/`, or `.../unsorted/` (anything left unclassified). Images are copied alongside each page so the output folder is self-contained.

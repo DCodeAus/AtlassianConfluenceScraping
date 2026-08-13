@@ -21,6 +21,8 @@ Run:
     .\confluence_html_to_markdown.ps1
 
 Optional: edit $exportDir / $markdownExportDir below if your folder names differ.
+
+Written by Dan.
 #>
 
 $exportDir = "confluence_export"

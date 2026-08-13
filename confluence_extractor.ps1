@@ -8,6 +8,8 @@ Run:
     .\confluence_extractor.ps1
 
 DO NOT commit this file with real values filled in. See README.md.
+
+Written by Dan.
 #>
 
 # --- Fill these in ---

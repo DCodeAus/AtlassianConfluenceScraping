@@ -124,3 +124,7 @@ First time running Python, or having trouble with VS Code's terminal? `runningPy
 ## One more thing
 
 All of this uses the same read access you already have browsing Confluence normally, nothing here needs admin rights or anything elevated, just the ability to open the pages in the first place.
+
+## Written by
+
+Dan.

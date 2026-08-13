@@ -7,6 +7,8 @@ Fill in the four values below, then run:
 
 If it prints a page title, you're good to move to the full extractor.
 If you get 401/403, see the troubleshooting notes at the bottom.
+
+Written by Dan.
 """
 
 import base64

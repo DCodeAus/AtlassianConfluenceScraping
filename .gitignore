@@ -1,0 +1,11 @@
+# Output of the extraction/conversion scripts - can contain a full copy of
+# a company's Confluence space, don't want that landing in git by accident.
+confluence_export/
+confluence_markdown_export/
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

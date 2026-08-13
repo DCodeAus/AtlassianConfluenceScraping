@@ -9,6 +9,8 @@ If PowerShell blocks it with a "running scripts is disabled" error, see the
 note at the very bottom of this file.
 
 If it prints a page title, you're good to move to the full extractor.
+
+Written by Dan.
 #>
 
 # --- Fill these in ---

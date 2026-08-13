@@ -10,6 +10,8 @@ Run:
 
 DO NOT commit this file with real USERNAME/PASSWORD filled in. See README.md
 in this repo for the recommended environment-variable approach.
+
+Written by Dan.
 """
 
 import base64
