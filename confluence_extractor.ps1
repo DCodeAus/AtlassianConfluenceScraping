@@ -13,7 +13,7 @@ Written by Dan.
 #>
 
 # --- Fill these in ---
-$BaseUrl  = "https://confluence.yourcompany.com"   # no trailing slash
+$BaseUrl = "https://confluence.yourcompany.com"   # no trailing slash
 $SpaceKey = "ABC"
 
 $OutputDir = "confluence_export"
@@ -244,3 +244,6 @@ if ($failures.Count -gt 0) {
 
 Write-Host "`nManifest saved to $manifestPath"
 Write-Host "Next step: convert content.html files to Markdown."
+#TODO:
+# Getting error on the MQ scripts to many en dashes?
+#Currently dont have a space scoped in SharePoint, so cant test the MQ scripts. Need to get a space scoped in SharePoint to test the MQ scripts.
