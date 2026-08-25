@@ -30,6 +30,7 @@ Written by Dan.
 """
 
 import csv
+import glob
 import json
 import os
 import re
@@ -48,6 +49,35 @@ NAMESPACE_DECLARATIONS = (
     'xmlns:ac="http://www.atlassian.com/schema/confluence/4/ac/" '
     'xmlns:ri="http://www.atlassian.com/schema/confluence/4/ri/"'
 )
+
+
+# The named HTML entities Confluence content actually tends to contain,
+# almost always from something pasted out of Word/Outlook. XML only
+# understands &amp; &lt; &gt; &apos; &quot;, so any of these left in the
+# page crash ET.fromstring with a ParseError on an otherwise perfectly
+# fine page. If a page still fails to convert because of some other named
+# entity, the error message names it, just add it to this list.
+KNOWN_HTML_ENTITIES = {
+    "nbsp": " ",
+    "mdash": "—",
+    "ndash": "–",
+    "hellip": "…",
+    "lsquo": "‘",
+    "rsquo": "’",
+    "ldquo": "“",
+    "rdquo": "”",
+    "trade": "™",
+    "copy": "©",
+    "reg": "®",
+}
+
+
+def escape_non_xml_entities(raw_html):
+    """Swaps known HTML entities for the real character they stand for,
+    so the XML parser doesn't choke on them."""
+    for name, char in KNOWN_HTML_ENTITIES.items():
+        raw_html = raw_html.replace(f"&{name};", char)
+    return raw_html
 
 
 def local_name(tag):
@@ -110,6 +140,21 @@ def convert_element_to_markdown(elem, list_depth):
         href = get_attr(elem, "href")
         link_text = convert_node_to_markdown(elem)
         return f"[{link_text}]({href})" if href else link_text
+
+    if tag == "link":
+        # Confluence's internal page-to-page link (<ac:link>). There's no
+        # stable URL to point to here (it depends where the target page
+        # ends up after migration), so keep the visible text and flag it
+        # rather than silently dropping the link, which is what happened
+        # before: it fell through to the generic "unknown tag" case and
+        # the href/target vanished with no trace.
+        page_ref = find_child_by_local_name(elem, "page")
+        target_title = get_attr(page_ref, "content-title") if page_ref is not None else None
+        link_text = convert_node_to_markdown(elem).strip()
+        display_text = link_text or target_title or "link"
+        if target_title:
+            return f"{display_text} <!-- internal Confluence link, unresolved: \"{target_title}\" -->"
+        return f"{display_text} <!-- internal Confluence link, unresolved -->"
 
     if tag == "ul":
         out = "\n"
@@ -237,7 +282,13 @@ def load_or_create_classification(manifest):
     # Load whatever's in the CSV already, and add any pages that are in the
     # manifest but missing from the CSV (e.g. new pages from a later
     # extractor run), without touching rows that have already been classified.
-    with open(CLASSIFICATION_PATH, "r", newline="", encoding="utf-8") as f:
+    # utf-8-sig (not plain utf-8): Excel's "CSV UTF-8" save option, which is
+    # exactly what the README tells you to use, writes a BOM at the start of
+    # the file. Reading that with plain utf-8 leaves the BOM stuck to the
+    # first header ("id" becomes "﻿id"), which silently breaks every
+    # row["id"] lookup below. utf-8-sig strips it if present, and behaves
+    # identically to utf-8 if it isn't.
+    with open(CLASSIFICATION_PATH, "r", newline="", encoding="utf-8-sig") as f:
         existing_rows = list(csv.DictReader(f))
 
     classification_lookup = {row["id"]: row["destination"] for row in existing_rows}
@@ -470,8 +521,18 @@ def main():
         try:
             os.makedirs(destination_folder, exist_ok=True)
 
+            # Clear out any .md file left in this folder from a previous run
+            # (e.g. a name shortened by run_destination_check() below) before
+            # writing a fresh content.md. Without this, re-running the
+            # conversion after a rename leaves both the old shortened file
+            # and a new content.md sitting side by side.
+            for stale_markdown_file in glob.glob(os.path.join(destination_folder, "*.md")):
+                os.remove(stale_markdown_file)
+
             with open(html_path, "r", encoding="utf-8") as f:
                 raw_html = f.read()
+
+            raw_html = escape_non_xml_entities(raw_html)
 
             # Wrap in a root element with the Confluence namespaces declared,
             # so the XML parser understands ac: and ri: prefixed tags.
