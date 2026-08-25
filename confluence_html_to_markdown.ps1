@@ -140,6 +140,41 @@ xmlns:ac="http://www.atlassian.com/schema/confluence/4/ac/"
 xmlns:ri="http://www.atlassian.com/schema/confluence/4/ri/"
 '@
 
+# The named HTML entities Confluence content actually tends to contain,
+# almost always from something pasted out of Word/Outlook. XML only
+# understands &amp; &lt; &gt; &apos; &quot;, so any of these left in the
+# page crash the XML parser on an otherwise perfectly fine page. If a page
+# still fails to convert because of some other named entity, the error
+# message names it, just add it here. Values are [char] codepoints rather
+# than the literal character, so there's no risk of a stray non-breaking
+# space or curly quote sneaking into this file looking identical to a
+# normal one.
+$knownHtmlEntities = @{
+    "nbsp"   = [char]0x0020   # a plain space, on purpose, not U+00A0
+    "mdash"  = [char]0x2014
+    "ndash"  = [char]0x2013
+    "hellip" = [char]0x2026
+    "lsquo"  = [char]0x2018
+    "rsquo"  = [char]0x2019
+    "ldquo"  = [char]0x201C
+    "rdquo"  = [char]0x201D
+    "trade"  = [char]0x2122
+    "copy"   = [char]0x00A9
+    "reg"    = [char]0x00AE
+}
+
+function ConvertTo-XmlSafeEntities {
+    # Swaps known HTML entities for the real character they stand for, so
+    # the XML parser doesn't choke on them.
+    param([string]$RawHtml)
+
+    $result = $RawHtml
+    foreach ($name in $knownHtmlEntities.Keys) {
+        $result = $result.Replace("&$name;", $knownHtmlEntities[$name])
+    }
+    return $result
+}
+
 function Convert-NodeToMarkdown {
     param(
         [System.Xml.Linq.XElement]$node,
@@ -181,6 +216,26 @@ function Convert-NodeToMarkdown {
                     [void]$stringBuilder.Append("[$linkText]($($hrefAttribute.Value))")
                 } else {
                     [void]$stringBuilder.Append($linkText)
+                }
+            }
+
+            "link" {
+                # Confluence's internal page-to-page link (<ac:link>). There's
+                # no stable URL to point to here (it depends where the target
+                # page ends up after migration), so keep the visible text and
+                # flag it rather than silently dropping it, which is what
+                # happened before: it fell through to the "default" case and
+                # the href/target vanished with no trace.
+                $pageRef = $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "page" } | Select-Object -First 1
+                $targetTitleAttribute = if ($pageRef) { $pageRef.Attributes() | Where-Object { $_.Name.LocalName -eq "content-title" } | Select-Object -First 1 } else { $null }
+                $targetTitle = if ($targetTitleAttribute) { $targetTitleAttribute.Value } else { $null }
+                $linkText = (Convert-NodeToMarkdown $childNode).Trim()
+                $displayText = if ($linkText) { $linkText } elseif ($targetTitle) { $targetTitle } else { "link" }
+
+                if ($targetTitle) {
+                    [void]$stringBuilder.Append("$displayText <!-- internal Confluence link, unresolved: `"$targetTitle`" -->")
+                } else {
+                    [void]$stringBuilder.Append("$displayText <!-- internal Confluence link, unresolved -->")
                 }
             }
 
@@ -315,7 +370,15 @@ foreach ($pageEntry in $manifest) {
     try {
         New-Item -ItemType Directory -Force -Path $destinationFolder | Out-Null
 
+        # Clear out any .md file left in this folder from a previous run
+        # (e.g. a name shortened by Invoke-DestinationCheck below) before
+        # writing a fresh content.md. Without this, re-running the
+        # conversion after a rename leaves both the old shortened file
+        # and a new content.md sitting side by side.
+        Get-ChildItem -Path $destinationFolder -Filter "*.md" -File -ErrorAction SilentlyContinue | Remove-Item -Force
+
         $rawHtml = Get-Content $htmlPath -Raw -Encoding UTF8
+        $rawHtml = ConvertTo-XmlSafeEntities $rawHtml
 
         # Wrap in a root element with the Confluence namespaces declared,
         # so the XML parser understands ac: and ri: prefixed tags.

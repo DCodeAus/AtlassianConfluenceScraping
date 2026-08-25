@@ -50,6 +50,33 @@ $headers = @{
     Accept        = "application/json"
 }
 
+$RetryMaxAttempts = 3
+$RetryBaseDelaySeconds = 1.0
+
+function Invoke-WithRetry {
+    # Retries an action on connection errors or 5xx responses (transient
+    # issues), but not on 4xx errors (bad credentials/permissions won't fix
+    # themselves by retrying). Without this, a single flaky moment mid-run
+    # (e.g. fetching page 300 of 500) aborts the whole script.
+    param([scriptblock]$Action)
+
+    for ($attempt = 1; $attempt -le $RetryMaxAttempts; $attempt++) {
+        try {
+            return & $Action
+        }
+        catch {
+            $statusCode = $_.Exception.Response.StatusCode.value__
+            $isClientError = $statusCode -and $statusCode -lt 500
+            if ($isClientError -or $attempt -eq $RetryMaxAttempts) {
+                throw
+            }
+            $wait = $RetryBaseDelaySeconds * [Math]::Pow(2, $attempt - 1)
+            Write-Host "    Request failed ($($_.Exception.Message)), retrying in ${wait}s (attempt $attempt/$RetryMaxAttempts)..."
+            Start-Sleep -Seconds $wait
+        }
+    }
+}
+
 function Get-SanitisedFilename {
     param([string]$Name)
     $invalidChars = '<>:"/\|?*'
@@ -89,7 +116,7 @@ function Get-AllPagesInSpace {
     while ($true) {
         Write-Host "Fetching page list: start=$start, limit=$PageSize"
         $uri = "$BaseUrl/rest/api/content?spaceKey=$SpaceKey&type=page&start=$start&limit=$PageSize&expand=body.storage,version"
-        $data = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+        $data = Invoke-WithRetry { Invoke-RestMethod -Uri $uri -Headers $headers -Method Get }
 
         $results = $data.results
         $allPages += $results
@@ -114,7 +141,7 @@ function Get-AttachmentsForPage {
 
     while ($true) {
         $uri = "$BaseUrl/rest/api/content/$PageId/child/attachment?start=$start&limit=$limit"
-        $data = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+        $data = Invoke-WithRetry { Invoke-RestMethod -Uri $uri -Headers $headers -Method Get }
 
         $results = $data.results
         $attachments += $results
@@ -132,7 +159,7 @@ function Save-Attachment {
     param([string]$DownloadPath, [string]$DestPath)
 
     $url = if ($DownloadPath -like "http*") { $DownloadPath } else { "$BaseUrl$DownloadPath" }
-    Invoke-WebRequest -Uri $url -Headers $headers -OutFile $DestPath
+    Invoke-WithRetry { Invoke-WebRequest -Uri $url -Headers $headers -OutFile $DestPath }
 }
 
 # --- Main ---
@@ -193,12 +220,17 @@ foreach ($page in $pages) {
             $usedAttachmentNames = [System.Collections.Generic.HashSet[string]]::new()
 
             foreach ($attachment in $attachments) {
-                $attTitle = $attachment.title
-                $downloadLink = $attachment._links.download
-                $safeAttName = Get-UniqueFilename (Get-SanitisedFilename $attTitle) $usedAttachmentNames
-                $destPath = Join-Path $imagesFolder $safeAttName
-
+                # Everything in this loop is guarded per-attachment: a
+                # missing field or a failed download should only cost this
+                # one attachment, not the whole page (whose HTML content
+                # was already fetched and saved above).
+                $attTitle = "<unknown>"
                 try {
+                    $attTitle = $attachment.title
+                    $downloadLink = $attachment._links.download
+                    $safeAttName = Get-UniqueFilename (Get-SanitisedFilename $attTitle) $usedAttachmentNames
+                    $destPath = Join-Path $imagesFolder $safeAttName
+
                     Save-Attachment -DownloadPath $downloadLink -DestPath $destPath
                     $attachmentRecords += $safeAttName
                 }
@@ -244,6 +276,3 @@ if ($failures.Count -gt 0) {
 
 Write-Host "`nManifest saved to $manifestPath"
 Write-Host "Next step: convert content.html files to Markdown."
-#TODO:
-# Getting error on the MQ scripts to many en dashes?
-#Currently dont have a space scoped in SharePoint, so cant test the MQ scripts. Need to get a space scoped in SharePoint to test the MQ scripts.

@@ -43,7 +43,7 @@ Worth running this before touching the full extractor, no point discovering an a
 
 Once the auth test passes, run the matching extractor (`confluence_extractor.py` or `.ps1`, whichever worked for you). It'll ask for your `BASE_URL` and `SPACE_KEY` if you haven't set them, then start working through every page in that space, saving the content and downloading images as it goes. For 500+ pages this'll take a few minutes, that's normal, not a hang, you'll see progress printed as `[142/500] Page Title`.
 
-If a page fails partway through (odd permissions, a network blip), it won't kill the whole run, that page just gets logged to `failures.json` at the end so you can look at it separately.
+A brief network blip won't even show up as a failure, connection errors and 5xx responses get retried a couple of times with a short backoff before giving up. If a page still fails after that (odd permissions, a persistent error), it won't kill the whole run, that page just gets logged to `failures.json` at the end so you can look at it separately.
 
 Everything lands in a `confluence_export` folder, one subfolder per page, each with its own `content.html` and `images/`.
 
@@ -78,7 +78,7 @@ Each page's images are copied alongside its `content.md`. Your original `conflue
 
 **Adding more pages later?** Re-run the extractor, then re-run this script, it'll add any new pages to the CSV with a blank destination without touching rows you've already filled in, then stop so you can classify just the new ones.
 
-If it hits a Confluence macro it doesn't recognise (a page tree, a Jira embed, something obscure), it doesn't just drop the content, it keeps whatever text was visible and flags the spot with a comment (`<!-- unrecognised macro: ... -->`) so you can go back and check it manually.
+If it hits a Confluence macro it doesn't recognise (a page tree, a Jira embed, something obscure), it doesn't just drop the content, it keeps whatever text was visible and flags the spot with a comment (`<!-- unrecognised macro: ... -->`) so you can go back and check it manually. Links to other Confluence pages get the same treatment, since there's no way to know the page's new URL until it's actually been migrated: the link text is kept, tagged with `<!-- internal Confluence link, unresolved: "..." -->`, so you can find and fix these up once everything's landed in its new home.
 
 **The length/naming check runs automatically** for whichever destinations actually have pages that run, no need to choose anything, since that's already decided per page by the CSV. For each destination present, it checks every page's file path against that platform's actual limits, Azure caps out at 235 characters total and turns spaces into hyphens, SharePoint's more generous at 400 characters but blocks a different set of characters. Anything too long gets flagged, and it'll offer to shorten the file names automatically so nothing fails on upload. You'll be asked for the real destination URL for a precise check, or you can leave it blank for an estimate, either way it tells you plainly which one you're getting.
 

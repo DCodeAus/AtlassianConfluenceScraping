@@ -68,30 +68,62 @@ def build_auth_header():
 AUTH_HEADER = build_auth_header()
 SSL_CONTEXT = build_ssl_context()
 
+RETRY_MAX_ATTEMPTS = 3
+RETRY_BASE_DELAY_SECONDS = 1.0
+
+
+def request_with_retry(func):
+    """Retries a request on connection errors or 5xx responses (transient
+    issues), but not on 4xx errors (bad credentials/permissions won't fix
+    themselves by retrying). Without this, a single flaky moment mid-run
+    (e.g. fetching page 300 of 500) aborts the whole script."""
+    last_error = None
+    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+        try:
+            return func()
+        except urllib.error.HTTPError as e:
+            last_error = e
+            if e.code < 500 or attempt == RETRY_MAX_ATTEMPTS:
+                raise
+        except urllib.error.URLError as e:
+            last_error = e
+            if attempt == RETRY_MAX_ATTEMPTS:
+                raise
+
+        wait = RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+        print(f"    Request failed ({last_error}), retrying in {wait:.1f}s (attempt {attempt}/{RETRY_MAX_ATTEMPTS})...")
+        time.sleep(wait)
+
 
 def api_get(path, params=None):
     """GET request against the Confluence REST API, returns parsed JSON."""
     query = f"?{urllib.parse.urlencode(params)}" if params else ""
     url = f"{BASE_URL}{path}{query}"
 
-    request = urllib.request.Request(url)
-    request.add_header("Authorization", AUTH_HEADER)
-    request.add_header("Accept", "application/json")
+    def do_request():
+        request = urllib.request.Request(url)
+        request.add_header("Authorization", AUTH_HEADER)
+        request.add_header("Accept", "application/json")
 
-    with urllib.request.urlopen(request, context=SSL_CONTEXT) as response:
-        return json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(request, context=SSL_CONTEXT) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    return request_with_retry(do_request)
 
 
 def download_binary(url_path, dest_path):
     """Downloads a binary file (e.g. an attachment/image) to disk."""
     url = url_path if url_path.startswith("http") else f"{BASE_URL}{url_path}"
 
-    request = urllib.request.Request(url)
-    request.add_header("Authorization", AUTH_HEADER)
+    def do_request():
+        request = urllib.request.Request(url)
+        request.add_header("Authorization", AUTH_HEADER)
 
-    with urllib.request.urlopen(request, context=SSL_CONTEXT) as response:
-        with open(dest_path, "wb") as f:
-            f.write(response.read())
+        with urllib.request.urlopen(request, context=SSL_CONTEXT) as response:
+            with open(dest_path, "wb") as f:
+                f.write(response.read())
+
+    request_with_retry(do_request)
 
 
 def sanitise_filename(name):
@@ -209,15 +241,20 @@ def main():
                 used_attachment_names = set()
 
                 for attachment in attachments:
-                    att_title = attachment["title"]
-                    download_link = attachment["_links"]["download"]
-                    safe_att_name = make_unique_filename(sanitise_filename(att_title), used_attachment_names)
-                    dest_path = os.path.join(images_folder, safe_att_name)
-
+                    # Everything in this loop is guarded per-attachment: a
+                    # missing key or a failed download should only cost this
+                    # one attachment, not the whole page (whose HTML content
+                    # was already fetched and saved above).
                     try:
+                        att_title = attachment["title"]
+                        download_link = attachment["_links"]["download"]
+                        safe_att_name = make_unique_filename(sanitise_filename(att_title), used_attachment_names)
+                        dest_path = os.path.join(images_folder, safe_att_name)
+
                         download_binary(download_link, dest_path)
                         attachment_records.append(safe_att_name)
                     except Exception as att_err:
+                        att_title = attachment.get("title", "<unknown>")
                         print(f"    Warning: failed to download attachment '{att_title}': {att_err}")
 
                     time.sleep(REQUEST_DELAY_SECONDS)
