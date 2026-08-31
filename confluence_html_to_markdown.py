@@ -1,32 +1,19 @@
 """
-Confluence HTML to Markdown converter.
-Standard library only, no pip install required.
+Confluence HTML to Markdown converter. Stdlib only.
 
-Reads manifest.json produced by confluence_extractor.py (or the .ps1
-version), converts each page's content.html into content.md, and routes
-the output into one of three folders depending on where that specific
-page is headed:
+Reads manifest.json from confluence_extractor (either version), turns each
+content.html into content.md, and sorts pages into:
 
     confluence_markdown_export/azure/...
     confluence_markdown_export/sharepoint/...
-    confluence_markdown_export/unsorted/...  (not yet classified)
+    confluence_markdown_export/unsorted/...
 
-WHY PER-PAGE ROUTING: some pages are technical docs going to Azure DevOps
-Wiki, others are onboarding/non-technical content going to SharePoint.
-There's no reliable way to guess which is which from the content alone, so
-this script asks you to classify each page once via a CSV file, rather than
-assuming or applying one destination to everything.
+Technical docs go to Azure DevOps Wiki, everything else to SharePoint - no
+way to tell those apart from the content itself, so you classify each page
+once via a CSV (see load_or_create_classification below). Pure local file
+processing, doesn't touch Confluence.
 
-No credentials needed, this step is pure local file processing, nothing
-talks to Confluence.
-
-Run:
     python confluence_html_to_markdown.py
-
-Optional: edit EXPORT_DIR / MARKDOWN_EXPORT_DIR below if your folder names
-differ.
-
-Written by Dan.
 """
 
 import csv
@@ -42,21 +29,18 @@ MARKDOWN_EXPORT_DIR = "confluence_markdown_export"
 CLASSIFICATION_PATH = os.path.join(EXPORT_DIR, "page_destinations.csv")
 CSV_FIELDNAMES = ["id", "title", "destination"]
 
-# Confluence storage format uses ac: and ri: prefixes for its own elements
-# (macros, images, attachment references) alongside plain XHTML. We declare
-# those namespaces so the XML parser doesn't choke on them.
+# Confluence storage format mixes plain XHTML with its own ac:/ri: prefixed
+# elements (macros, images, attachment refs) - declare the namespaces so the
+# parser doesn't choke on them.
 NAMESPACE_DECLARATIONS = (
     'xmlns:ac="http://www.atlassian.com/schema/confluence/4/ac/" '
     'xmlns:ri="http://www.atlassian.com/schema/confluence/4/ri/"'
 )
 
 
-# The named HTML entities Confluence content actually tends to contain,
-# almost always from something pasted out of Word/Outlook. XML only
-# understands &amp; &lt; &gt; &apos; &quot;, so any of these left in the
-# page crash ET.fromstring with a ParseError on an otherwise perfectly
-# fine page. If a page still fails to convert because of some other named
-# entity, the error message names it, just add it to this list.
+# Named entities that turn up in content pasted from Word/Outlook. XML only
+# knows amp/lt/gt/apos/quot, so anything else here crashes ET.fromstring on
+# an otherwise fine page. Hit a new one? The error names it - add it below.
 KNOWN_HTML_ENTITIES = {
     "nbsp": " ",
     "mdash": "—",
@@ -73,24 +57,20 @@ KNOWN_HTML_ENTITIES = {
 
 
 def escape_non_xml_entities(raw_html):
-    """Swaps known HTML entities for the real character they stand for,
-    so the XML parser doesn't choke on them."""
     for name, char in KNOWN_HTML_ENTITIES.items():
         raw_html = raw_html.replace(f"&{name};", char)
     return raw_html
 
 
 def local_name(tag):
-    """Strips the {namespace} prefix ElementTree adds to qualified tag/attribute names."""
+    # ElementTree prefixes qualified tags/attrs with {namespace}, strip it
     return tag.split("}", 1)[1] if "}" in tag else tag
-
 
 def find_child_by_local_name(elem, name):
     for child in elem:
         if local_name(child.tag) == name:
             return child
     return None
-
 
 def get_attr(elem, local_attr_name):
     for key, value in elem.attrib.items():
@@ -142,12 +122,9 @@ def convert_element_to_markdown(elem, list_depth):
         return f"[{link_text}]({href})" if href else link_text
 
     if tag == "link":
-        # Confluence's internal page-to-page link (<ac:link>). There's no
-        # stable URL to point to here (it depends where the target page
-        # ends up after migration), so keep the visible text and flag it
-        # rather than silently dropping the link, which is what happened
-        # before: it fell through to the generic "unknown tag" case and
-        # the href/target vanished with no trace.
+        # <ac:link> - internal page-to-page link, no stable URL until the
+        # target's actually migrated, so keep the text and flag it instead
+        # of dropping it (used to fall through to unknown-tag and vanish)
         page_ref = find_child_by_local_name(elem, "page")
         target_title = get_attr(page_ref, "content-title") if page_ref is not None else None
         link_text = convert_node_to_markdown(elem).strip()
@@ -216,8 +193,9 @@ def convert_element_to_markdown(elem, list_depth):
             panel_label = macro_name.upper()
             return f"\n> **{panel_label}:** {inner_text}\n"
 
-        # Unrecognised macro: keep any readable text inside it so nothing is
-        # silently lost, flag it for manual review.
+        # only handling code/info/note/warning/tip specifically, everything else
+        # (page trees, Jira embeds, whatever) falls through here - keep the
+        # readable text so nothing's silently lost, flag it for manual review
         inner_text = convert_node_to_markdown(elem).strip()
         if inner_text:
             return f"\n<!-- unrecognised macro: {macro_name} -->\n{inner_text}\n"
@@ -235,25 +213,10 @@ def normalise_relative_path(path_str):
     return os.path.join(*parts) if parts else path_str
 
 
-# ============================================================
-# PER-PAGE DESTINATION CLASSIFICATION
-#
-# WHY THIS EXISTS: this export is going to two different places, technical
-# docs to Azure DevOps Wiki, everything else (onboarding, non-technical) to
-# SharePoint. The script can't reliably tell those apart from content alone,
-# so it asks you to classify each page once, in a plain CSV you can open in
-# Excel, rather than guessing.
-#
-# FIRST RUN: if page_destinations.csv doesn't exist yet, this section
-# creates it (one row per page, id/title/destination, destination left
-# blank) and stops here so you can fill it in. Open it in Excel or any text
-# editor, type "azure" or "sharepoint" in the destination column for each
-# row, save, then run this script again.
-#
-# LATER RUNS: if you add more pages to confluence_export later (re-running
-# the extractor), re-run this script, it'll add any new pages to the CSV
-# with a blank destination without touching rows you've already filled in.
-# ============================================================
+# First run: no CSV yet, so we generate one (id/title/destination, blank)
+# and stop so you can fill it in - "azure" or "sharepoint" per row, Excel's
+# fine. Later runs: any new pages get appended with a blank destination,
+# already-filled rows are left alone.
 
 
 def write_classification_csv(rows, path):
@@ -279,15 +242,9 @@ def load_or_create_classification(manifest):
         print("this script again and it'll pick up where you left off.")
         return None
 
-    # Load whatever's in the CSV already, and add any pages that are in the
-    # manifest but missing from the CSV (e.g. new pages from a later
-    # extractor run), without touching rows that have already been classified.
-    # utf-8-sig (not plain utf-8): Excel's "CSV UTF-8" save option, which is
-    # exactly what the README tells you to use, writes a BOM at the start of
-    # the file. Reading that with plain utf-8 leaves the BOM stuck to the
-    # first header ("id" becomes "﻿id"), which silently breaks every
-    # row["id"] lookup below. utf-8-sig strips it if present, and behaves
-    # identically to utf-8 if it isn't.
+    # utf-8-sig not utf-8: Excel's "CSV UTF-8" save writes a BOM, and plain
+    # utf-8 leaves it glued to the first header ("id" -> "﻿id"), which
+    # silently breaks every row["id"] lookup below.
     with open(CLASSIFICATION_PATH, "r", newline="", encoding="utf-8-sig") as f:
         existing_rows = list(csv.DictReader(f))
 
@@ -318,41 +275,13 @@ def load_or_create_classification(manifest):
     return {row["id"]: re.sub(r"\s", "", row["destination"]).lower() for row in all_rows}
 
 
-# ============================================================
-# DESTINATION PATH LENGTH / NAMING CHECK
-#
-# WHY THIS EXISTS: both Azure DevOps Wiki and SharePoint document
-# libraries have their own rules about how long a file's full path can be,
-# and which characters are allowed in a file name. Uploads that break
-# these rules fail, sometimes with unhelpful error messages, so it's safer
-# to catch and fix this now than to discover it partway through uploading
-# 500+ pages.
-#
-# Azure DevOps Wiki:
-#   - Full path (repo URL + folder path + file name) must be 235
-#     characters or less.
-#   - Spaces in the page title become hyphens in the file name.
-#   - Disallowed characters in the file name: / \ #
-#   - File name can't start or end with a period.
-#   Source: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/naming-restrictions
-#
-# SharePoint document libraries:
-#   - Individual file/folder names must be 400 characters or less.
-#   - Full path (site URL + library + folders + file name) must also be
-#     400 characters or less in total.
-#   - Disallowed characters anywhere in the name: " * : < > ? / \ |  # { }
-#   - Spaces are fine, SharePoint doesn't rewrite the title into the file
-#     name the way Azure DevOps Wiki does.
-#   Source: Microsoft SharePoint documentation on invalid file/folder names
-#
-# This runs automatically for whichever destinations actually have pages
-# in this run, no need to ask "which one" since that's now decided per
-# page by the CSV.
-# ============================================================
-
+# Azure DevOps Wiki caps full path at 235 chars, spaces->hyphens in the
+# file name, / \ # not allowed, can't start/end with a period. SharePoint
+# caps at 400, spaces are fine, disallowed chars are " * : < > ? / \ | # {}.
+# Catching this now beats finding out 300 pages into an upload.
+# learned these the hard way after a batch upload bounced most of a space
 AZURE_MAX_PATH_LENGTH = 235
 SHAREPOINT_MAX_PATH_LENGTH = 400
-
 
 def to_azure_wiki_filename(title):
     """Mirrors how Azure DevOps derives a page's file name from its title:
@@ -373,8 +302,6 @@ def to_sharepoint_filename(title):
 
 
 def estimate_path_length(repo_url_prefix, folder_path, file_name, max_length):
-    """Returns the estimated full path length for a page, and whether it
-    breaches the given destination's limit."""
     if repo_url_prefix:
         full_path = f"{repo_url_prefix}/{folder_path}/{file_name}"
     else:
@@ -437,10 +364,7 @@ def run_destination_check(bucket, destination_name, max_path_length, url_prompt,
     print("\nShortening the affected file names...")
 
     for affected in affected_pages:
-        # Work out how much needs to be trimmed off the title portion of the
-        # file name to fit under the limit, keeping a safety margin and
-        # appending a short unique suffix so two shortened titles don't
-        # collide with each other.
+        # trim the title down to fit, page_id suffix keeps shortened names unique
         unique_suffix = f"-{affected['page_id']}"
         overshoot = affected["length"] - max_path_length
         chars_to_trim = overshoot + len(unique_suffix) + 5  # small safety margin
@@ -487,12 +411,8 @@ def main():
     if classification_lookup is None:
         return
 
-    # ============================================================
-    # MAIN CONVERSION LOOP
-    # Each page gets routed into a subfolder matching its classification:
-    # azure, sharepoint, or unsorted (if blank or an unrecognised value).
-    # ============================================================
-
+    # each page lands in a subfolder matching its classification, or
+    # "unsorted" if the CSV row is blank/unrecognised
     total_pages = len(manifest)
     conversion_warnings = []
     destination_counts = {"azure": 0, "sharepoint": 0, "unsorted": 0}
@@ -521,11 +441,8 @@ def main():
         try:
             os.makedirs(destination_folder, exist_ok=True)
 
-            # Clear out any .md file left in this folder from a previous run
-            # (e.g. a name shortened by run_destination_check() below) before
-            # writing a fresh content.md. Without this, re-running the
-            # conversion after a rename leaves both the old shortened file
-            # and a new content.md sitting side by side.
+            # wipe any .md left over from a previous run (e.g. a name
+            # shortened by run_destination_check) or it sits next to the new one
             for stale_markdown_file in glob.glob(os.path.join(destination_folder, "*.md")):
                 os.remove(stale_markdown_file)
 

@@ -1,8 +1,11 @@
 <#
-Confluence full space extractor - PowerShell version.
+Confluence extractor - PowerShell version.
 No install required. Reads trusted certificates from the Windows certificate
 store automatically, so no cert file path is needed here (unlike the Python
 version).
+
+Pulls every page in a space, or just one page if you give it a page ID
+when asked.
 
 Run:
     .\confluence_extractor.ps1
@@ -14,7 +17,7 @@ Written by Dan.
 
 # --- Fill these in ---
 $BaseUrl = "https://confluence.yourcompany.com"   # no trailing slash
-$SpaceKey = "ABC"
+$SpaceKey = "ABC"   # used unless you enter a page ID below
 
 $OutputDir = "confluence_export"
 $PageSize = 25
@@ -40,6 +43,13 @@ else {
     $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
     [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
 }
+
+# Asked every run so it's never silently assumed which mode you're about to
+# get. Leave blank for the whole space, or paste a page ID (from the page
+# URL, e.g. .../pages/123456789/Page+Title) to pull just that one page -
+# handy for a personal space or a one-off. Set CONFLUENCE_PAGE_ID for
+# unattended runs. Needs no more access than opening the page normally does.
+$PageId = if ($env:CONFLUENCE_PAGE_ID) { $env:CONFLUENCE_PAGE_ID } else { (Read-Host "Page ID to extract (leave blank for the whole space)").Trim() }
 
 $pair = "$($Username):$($Password)"
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($pair)
@@ -132,6 +142,12 @@ function Get-AllPagesInSpace {
     return $allPages
 }
 
+function Get-SinglePage {
+    param([string]$PageId)
+    $uri = "$BaseUrl/rest/api/content/${PageId}?expand=body.storage,version"
+    Invoke-WithRetry { Invoke-RestMethod -Uri $uri -Headers $headers -Method Get }
+}
+
 function Get-AttachmentsForPage {
     param([string]$PageId)
 
@@ -168,10 +184,15 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $pagesDir = Join-Path $OutputDir "pages"
 New-Item -ItemType Directory -Force -Path $pagesDir | Out-Null
 
-Write-Host "Starting extraction for space '$SpaceKey'..."
+if ($PageId) {
+    Write-Host "Fetching single page (id $PageId)..."
+}
+else {
+    Write-Host "Starting extraction for space '$SpaceKey'..."
+}
 
 try {
-    $pages = Get-AllPagesInSpace
+    $pages = if ($PageId) { @(Get-SinglePage -PageId $PageId) } else { Get-AllPagesInSpace }
 }
 catch {
     $statusCode = $_.Exception.Response.StatusCode.value__
@@ -187,7 +208,7 @@ catch {
     exit 1
 }
 
-Write-Host "Found $($pages.Count) pages. Beginning download...`n"
+Write-Host "Found $($pages.Count) page(s). Beginning download...`n"
 
 $manifest = @()
 $failures = @()
