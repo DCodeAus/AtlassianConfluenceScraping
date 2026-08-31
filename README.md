@@ -47,6 +47,8 @@ A brief network blip won't even show up as a failure, connection errors and 5xx 
 
 Everything lands in a `confluence_export` folder, one subfolder per page, each with its own `content.html` and `images/`.
 
+Only want one page instead of a whole space, say someone's personal space? Alongside the username/password prompts, it'll also ask for a page ID - leave it blank to pull the whole space as normal, or paste one in (grabbed straight from the page's URL, `.../pages/123456789/Page+Title`) to pull just that page instead. `SPACE_KEY` is ignored when you give it a page ID. Needs no more access than opening the page normally does. For unattended runs, set `CONFLUENCE_PAGE_ID` as an environment variable to skip the prompt, same as the credentials.
+
 ## Turning it into Markdown
 
 Once you've got a `confluence_export` folder full of pages, run:

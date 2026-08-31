@@ -1,8 +1,9 @@
 """
-Confluence full space extractor - stdlib only, no pip install.
+Confluence extractor - stdlib only, no pip install.
 
-Pulls every page in a space: dumps the raw HTML (body.storage) plus any
-attached images, so it's ready for the Markdown conversion step next.
+Pulls every page in a space, or just one page if you give it a page ID when
+asked: dumps the raw HTML (body.storage) plus any attached images, so it's
+ready for the Markdown conversion step next.
 
     python confluence_extractor.py
 
@@ -22,11 +23,18 @@ import urllib.request
 
 # fill these in - see confluence_auth_test.py if you hit an SSL cert error
 BASE_URL = "https://confluence.yourcompany.com"   # no trailing slash
-SPACE_KEY = "ABC"
+SPACE_KEY = "ABC"   # used unless you enter a page ID below
 
 # env vars for unattended runs, otherwise prompts
 USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input("Confluence username: ")
 PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass.getpass("Confluence password: ")
+
+# Asked every run so it's never silently assumed which mode you're about to
+# get. Leave blank for the whole space, or paste a page ID (from the page
+# URL, e.g. .../pages/123456789/Page+Title) to pull just that one page -
+# handy for a personal space or a one-off. Set CONFLUENCE_PAGE_ID for
+# unattended runs. Needs no more access than opening the page normally does.
+PAGE_ID = os.environ.get("CONFLUENCE_PAGE_ID") or input("Page ID to extract (leave blank for the whole space): ").strip()
 
 INTERNAL_CA_PATH = None   # e.g. r"C:\certs\company-root-ca.pem"
 VERIFY_SSL = True
@@ -162,6 +170,10 @@ def get_all_pages_in_space():
     return all_pages
 
 
+def get_single_page(page_id):
+    return api_get(f"/rest/api/content/{page_id}", {"expand": "body.storage,version"})
+
+
 def get_attachments_for_page(page_id):
     attachments = []
     start = 0
@@ -187,9 +199,13 @@ def main():
     pages_dir = os.path.join(OUTPUT_DIR, "pages")
     os.makedirs(pages_dir, exist_ok=True)
 
-    print(f"Starting extraction for space '{SPACE_KEY}'...")
-    pages = get_all_pages_in_space()
-    print(f"Found {len(pages)} pages. Beginning download...\n")
+    if PAGE_ID:
+        print(f"Fetching single page (id {PAGE_ID})...")
+        pages = [get_single_page(PAGE_ID)]
+    else:
+        print(f"Starting extraction for space '{SPACE_KEY}'...")
+        pages = get_all_pages_in_space()
+    print(f"Found {len(pages)} page(s). Beginning download...\n")
 
     manifest = []
     failures = []
