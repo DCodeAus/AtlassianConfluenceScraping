@@ -25,6 +25,8 @@ Optional: edit $exportDir / $markdownExportDir below if your folder names differ
 Written by Dan.
 #>
 
+Add-Type -AssemblyName System.Xml.Linq
+
 $exportDir = "confluence_export"
 $markdownExportDir = "confluence_markdown_export"
 $classificationPath = Join-Path $exportDir "page_destinations.csv"
