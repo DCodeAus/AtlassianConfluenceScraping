@@ -1,17 +1,13 @@
 """
-Confluence full space extractor.
-Standard library only, no pip install required.
+Confluence full space extractor - stdlib only, no pip install.
 
-Pulls every page in a given space: saves the raw HTML content (body.storage)
-and downloads every attached image, ready for the Markdown conversion step.
+Pulls every page in a space: dumps the raw HTML (body.storage) plus any
+attached images, so it's ready for the Markdown conversion step next.
 
-Run:
     python confluence_extractor.py
 
-DO NOT commit this file with real USERNAME/PASSWORD filled in. See README.md
-in this repo for the recommended environment-variable approach.
-
-Written by Dan.
+Don't commit this with real creds filled in - see README.md for the
+env-var approach.
 """
 
 import base64
@@ -24,28 +20,20 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# ============================================================
-# CONFIG - fill these in (see confluence_auth_test.py notes on
-# INTERNAL_CA_PATH if you hit an SSL certificate error)
-# ============================================================
+# fill these in - see confluence_auth_test.py if you hit an SSL cert error
 BASE_URL = "https://confluence.yourcompany.com"   # no trailing slash
 SPACE_KEY = "ABC"
 
-# Username and password are asked for at runtime rather than hardcoded,
-# so this file is safe to share without exposing credentials. If you're
-# automating this (e.g. a scheduled job), set CONFLUENCE_USERNAME and
-# CONFLUENCE_PASSWORD as environment variables instead and the prompts
-# below are skipped.
+# env vars for unattended runs, otherwise prompts
 USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input("Confluence username: ")
-PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass.getpass("Confluence password: ")   # input is hidden, not echoed to screen
+PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass.getpass("Confluence password: ")
 
 INTERNAL_CA_PATH = None   # e.g. r"C:\certs\company-root-ca.pem"
 VERIFY_SSL = True
 
 OUTPUT_DIR = "confluence_export"
-PAGE_SIZE = 25            # how many pages to request per API call
-REQUEST_DELAY_SECONDS = 0.3   # small pause between calls, be a polite citizen
-# ============================================================
+PAGE_SIZE = 25   # seemed like a safe default, never bothered tuning it
+REQUEST_DELAY_SECONDS = 0.3   # be a polite citizen
 
 
 def build_ssl_context():
@@ -57,7 +45,6 @@ def build_ssl_context():
         ctx.verify_mode = ssl.CERT_NONE
         return ctx
     return ssl.create_default_context()
-
 
 def build_auth_header():
     pair = f"{USERNAME}:{PASSWORD}"
@@ -73,10 +60,8 @@ RETRY_BASE_DELAY_SECONDS = 1.0
 
 
 def request_with_retry(func):
-    """Retries a request on connection errors or 5xx responses (transient
-    issues), but not on 4xx errors (bad credentials/permissions won't fix
-    themselves by retrying). Without this, a single flaky moment mid-run
-    (e.g. fetching page 300 of 500) aborts the whole script."""
+    """Retries on 5xx/connection errors, not on 4xx (bad creds won't fix
+    themselves). Without this one flaky request mid-run kills the script."""
     last_error = None
     for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
         try:
@@ -96,7 +81,6 @@ def request_with_retry(func):
 
 
 def api_get(path, params=None):
-    """GET request against the Confluence REST API, returns parsed JSON."""
     query = f"?{urllib.parse.urlencode(params)}" if params else ""
     url = f"{BASE_URL}{path}{query}"
 
@@ -112,7 +96,6 @@ def api_get(path, params=None):
 
 
 def download_binary(url_path, dest_path):
-    """Downloads a binary file (e.g. an attachment/image) to disk."""
     url = url_path if url_path.startswith("http") else f"{BASE_URL}{url_path}"
 
     def do_request():
@@ -127,12 +110,11 @@ def download_binary(url_path, dest_path):
 
 
 def sanitise_filename(name):
-    """Strips characters that aren't safe in Windows/Mac/Linux filenames."""
+    # covers the invalid chars across Windows/Mac/Linux, not just this OS
     invalid_chars = '<>:"/\\|?*'
     for ch in invalid_chars:
         name = name.replace(ch, "_")
     return name.strip()
-
 
 def make_unique_filename(name, used_names):
     """Appends a numeric suffix if this name was already used on the same page,
@@ -151,7 +133,6 @@ def make_unique_filename(name, used_names):
 
 
 def get_all_pages_in_space():
-    """Paginates through the space, returns a list of page summaries."""
     all_pages = []
     start = 0
 
@@ -182,7 +163,6 @@ def get_all_pages_in_space():
 
 
 def get_attachments_for_page(page_id):
-    """Returns a list of attachment metadata for a given page."""
     attachments = []
     start = 0
     limit = 50
@@ -241,10 +221,8 @@ def main():
                 used_attachment_names = set()
 
                 for attachment in attachments:
-                    # Everything in this loop is guarded per-attachment: a
-                    # missing key or a failed download should only cost this
-                    # one attachment, not the whole page (whose HTML content
-                    # was already fetched and saved above).
+                    # per-attachment try/except so one bad download doesn't
+                    # sink the whole page - the HTML's already saved by now
                     try:
                         att_title = attachment["title"]
                         download_link = attachment["_links"]["download"]
@@ -254,6 +232,8 @@ def main():
                         download_binary(download_link, dest_path)
                         attachment_records.append(safe_att_name)
                     except Exception as att_err:
+                        # TODO: track these and retry at the end instead of just
+                        # warning and moving on - hasn't been a big enough problem yet
                         att_title = attachment.get("title", "<unknown>")
                         print(f"    Warning: failed to download attachment '{att_title}': {att_err}")
 
@@ -301,10 +281,9 @@ if __name__ == "__main__":
         if e.code == 401:
             print("Check your username/password.")
         elif e.code == 403:
-            print("Credentials are valid but you lack read access to this space.")
+            print("Creds are fine, you just don't have read access to this space.")
     except urllib.error.URLError as e:
-        reason_text = str(e.reason)
-        if "CERTIFICATE_VERIFY_FAILED" in reason_text or "certificate verify failed" in reason_text.lower():
+        if "certificate verify failed" in str(e.reason).lower():
             print("SSL certificate verify failed. Set INTERNAL_CA_PATH above, see")
             print("confluence_auth_test.py for the cert export instructions.")
         else:
