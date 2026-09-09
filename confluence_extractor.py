@@ -246,7 +246,13 @@ def main():
                         dest_path = os.path.join(images_folder, safe_att_name)
 
                         download_binary(download_link, dest_path)
-                        attachment_records.append(safe_att_name)
+                        # Keep both names: the page's HTML references images by
+                        # their original Confluence filename, which can differ
+                        # from what actually got saved to disk (sanitised
+                        # characters, or a _2 suffix from a name collision).
+                        # The converter needs this mapping to resolve them back
+                        # to the file that's actually there.
+                        attachment_records.append({"filename": att_title, "saved_as": safe_att_name})
                     except Exception as att_err:
                         # TODO: track these and retry at the end instead of just
                         # warning and moving on - hasn't been a big enough problem yet

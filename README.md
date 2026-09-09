@@ -29,6 +29,8 @@ If an older version of a script ever did have real credentials typed into it and
 | `confluence_extractor.ps1` | Same extractor, PowerShell version. Use this one if Python keeps tripping over the org's certificate. |
 | `confluence_html_to_markdown.ps1` | Takes everything the extractor pulled and turns it into proper Markdown, images and all. Routes each page to Azure or SharePoint based on how you've classified it in a CSV, with a built-in check for each platform's file name limits. |
 | `confluence_html_to_markdown.py` | Same conversion and routing, Python standard library only. Use this one if you don't have PowerShell (e.g. extracted on Mac/Linux). |
+| `repair_garbled_text.ps1` | Fixes up `content.html`/`content.md` files already extracted with the old `.ps1` encoding bug (garbled accents/quotes/dashes, see Troubleshooting below). Only needed once, for content pulled before that fix landed. |
+| `repair_garbled_text.py` | Same repair, Python standard library only. |
 | `runningPythonScriptsInVSCode.md` | If Python in VS Code is giving you grief (PATH errors, nothing happening when you hit run), this walks through it. |
 
 A couple of older files (`confluence_no_ssl_auth_test.py`, `confluence_auth_test_no_imports.py`) were working drafts from while I was sorting out the SSL cert issue. Everything useful from them is now folded into `confluence_auth_test.py`, so they're just clutter at this point, safe to delete.
@@ -115,6 +117,7 @@ First time running Python, or having trouble with VS Code's terminal? `runningPy
 | `403 Forbidden` | Login's fine, you just don't have read access to that particular space. |
 | `python is not recognised` | Python's not on PATH, or your terminal was open before Python got installed. See the VS Code guide. |
 | PowerShell won't run the script at all | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, run as yourself, no admin needed. |
+| Weird garbled characters in the Markdown, e.g. `Â` where a space or accent should be, or `â€™` instead of an apostrophe | An old bug in `confluence_extractor.ps1`: PowerShell decoded Confluence's UTF-8 response as Windows-1252, mangling anything non-ASCII (accents, curly quotes, dashes). Already fixed in the extractor, so new extractions come out clean. For content you already pulled before the fix, run `repair_garbled_text.ps1` (or `.py`) once against your `confluence_export`/`confluence_markdown_export` folders, it undoes the mis-decode in place and backs up each file it touches as `.bak`. |
 
 ## Where things stand
 
