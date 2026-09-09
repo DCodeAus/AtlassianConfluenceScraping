@@ -98,6 +98,21 @@ def build_attachment_map(attachments):
     return attachment_map
 
 
+# Loaded once (see main()) from user_display_names.json - @mentions only
+# carry an opaque userkey/username in the storage HTML, this is the
+# extractor's best-effort resolution of those to an actual name.
+USER_DISPLAY_NAMES = {}
+
+
+def load_user_display_names():
+    path = os.path.join(EXPORT_DIR, "user_display_names.json")
+    if not os.path.exists(path):
+        return {}
+    # utf-8-sig - see the matching comment on manifest.json above.
+    with open(path, "r", encoding="utf-8-sig") as f:
+        return json.load(f)
+
+
 def convert_node_to_markdown(elem, list_depth=0):
     """Walks an element's children in document order (text + child elements),
     dispatching each child element to its Markdown equivalent."""
@@ -141,16 +156,68 @@ def convert_element_to_markdown(elem, list_depth):
         return f"[{link_text}]({href})" if href else link_text
 
     if tag == "link":
-        # <ac:link> - internal page-to-page link, no stable URL until the
-        # target's actually migrated, so keep the text and flag it instead
-        # of dropping it (used to fall through to unknown-tag and vanish)
+        # <ac:link> covers three different reference types depending on
+        # which ri: child it wraps - page, attachment, or user - and only
+        # the page case genuinely has no resolvable target yet.
         page_ref = find_child_by_local_name(elem, "page")
-        target_title = get_attr(page_ref, "content-title") if page_ref is not None else None
+        attachment_ref = find_child_by_local_name(elem, "attachment")
+        user_ref = find_child_by_local_name(elem, "user")
         link_text = convert_node_to_markdown(elem).strip()
+
+        if attachment_ref is not None:
+            # Link to a downloadable attachment (not an <ac:image> embed) -
+            # unlike a page link, we already know exactly where this file
+            # ends up (same attachment map images use), so resolve it
+            # properly instead of flagging it as unresolved.
+            filename = get_attr(attachment_ref, "filename")
+            if filename:
+                saved_name = CURRENT_ATTACHMENT_MAP.get(filename, filename)
+                display_text = link_text or filename
+                return f"[{display_text}](<images/{saved_name}>)"
+            return link_text or "attachment"
+
+        if user_ref is not None:
+            # @mention - Confluence resolves this to a live profile link we
+            # have no equivalent for, so at minimum keep the person's name
+            # visible instead of losing who was mentioned entirely.
+            raw_id = get_attr(user_ref, "userkey") or get_attr(user_ref, "username")
+            display_name = USER_DISPLAY_NAMES.get(raw_id) if raw_id else None
+            return f"@{display_name or link_text or raw_id or 'mentioned user'}"
+
+        # Page link: no stable URL until the target's actually migrated,
+        # so keep the text and flag it instead of dropping it (used to
+        # fall through to unknown-tag and vanish).
+        target_title = get_attr(page_ref, "content-title") if page_ref is not None else None
         display_text = link_text or target_title or "link"
         if target_title:
             return f"{display_text} <!-- internal Confluence link, unresolved: \"{target_title}\" -->"
         return f"{display_text} <!-- internal Confluence link, unresolved -->"
+
+    if tag == "emoticon":
+        # Self-closing - <ac:emoticon ac:name="smile" ac:emoji-fallback="🙂"/>
+        # emoji-fallback (when present) is the literal character, best case.
+        # Older content without it just gets a Slack/GitHub-style :name:.
+        fallback = get_attr(elem, "emoji-fallback")
+        if fallback:
+            return fallback
+        name = get_attr(elem, "name")
+        return f":{name}:" if name else ""
+
+    if tag == "task-list":
+        out = "\n"
+        for task_item in elem:
+            if local_name(task_item.tag) == "task":
+                out += convert_element_to_markdown(task_item, list_depth)
+        return out
+
+    if tag == "task":
+        status_node = find_child_by_local_name(elem, "task-status")
+        body_node = find_child_by_local_name(elem, "task-body")
+        is_complete = status_node is not None and (status_node.text or "").strip().lower() == "complete"
+        body_text = convert_node_to_markdown(body_node, list_depth).strip() if body_node is not None else ""
+        indent = "  " * list_depth
+        checkbox = "x" if is_complete else " "
+        return f"{indent}- [{checkbox}] {body_text}\n"
 
     if tag == "ul":
         out = "\n"
@@ -254,7 +321,12 @@ def normalise_relative_path(path_str):
 
 
 def write_classification_csv(rows, path):
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    # utf-8-sig, not utf-8: this file is meant to be opened in Excel (see
+    # the instructions this script prints below) - without the BOM, Excel
+    # can misread it as Windows-1252 and mangle any non-ASCII page title,
+    # the exact "café" -> "cafÃ©" mojibake this whole project started
+    # from, just via CSV/Excel instead of the old PowerShell extractor bug.
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
         writer.writeheader()
         writer.writerows(rows)
@@ -435,7 +507,13 @@ def main():
         print("Run confluence_extractor.py (or .ps1) first, or check EXPORT_DIR points at the right spot.")
         return
 
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    # utf-8-sig, not utf-8: if manifest.json was written by
+    # confluence_extractor.ps1 on Windows PowerShell 5.1, Set-Content
+    # -Encoding UTF8 adds a BOM there (unlike this Python extractor, and
+    # unlike PowerShell 7's Set-Content) - plain "utf-8" chokes outright
+    # on that BOM with a JSONDecodeError. utf-8-sig handles a manifest
+    # with or without one.
+    with open(manifest_path, "r", encoding="utf-8-sig") as f:
         manifest = json.load(f)
 
     for page_entry in manifest:
@@ -444,6 +522,9 @@ def main():
     classification_lookup = load_or_create_classification(manifest)
     if classification_lookup is None:
         return
+
+    global USER_DISPLAY_NAMES
+    USER_DISPLAY_NAMES = load_user_display_names()
 
     # each page lands in a subfolder matching its classification, or
     # "unsorted" if the CSV row is blank/unrecognised
@@ -499,7 +580,10 @@ def main():
             markdown_body = re.sub(r"(\n\s*){3,}", "\n\n", markdown_body)
             markdown_body = markdown_body.strip() + "\n"
 
-            final_markdown = f"# {page_entry['title']}\n\n{markdown_body}"
+            labels = page_entry.get("labels") or []
+            tags_line = f"**Tags:** {', '.join(labels)}\n\n" if labels else ""
+
+            final_markdown = f"# {page_entry['title']}\n\n{tags_line}{markdown_body}"
 
             with open(markdown_path, "w", encoding="utf-8") as f:
                 f.write(final_markdown)

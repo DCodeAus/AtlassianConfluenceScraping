@@ -25,8 +25,12 @@ Optional: edit $exportDir / $markdownExportDir below if your folder names differ
 Written by Dan.
 #>
 
+# Loads .NET's "LINQ to XML" library, which this script uses to read and
+# walk through each page's HTML content.
 Add-Type -AssemblyName System.Xml.Linq
 
+# Where confluence_extractor.ps1 saved everything (must match its
+# $OutputDir), and where this script's own output will go.
 $exportDir = "confluence_export"
 $markdownExportDir = "confluence_markdown_export"
 $classificationPath = Join-Path $exportDir "page_destinations.csv"
@@ -34,12 +38,17 @@ $classificationPath = Join-Path $exportDir "page_destinations.csv"
 $manifestPath = Join-Path $exportDir "manifest.json"
 
 if (-not (Test-Path $manifestPath)) {
+    # Nothing to convert without the extractor having run first.
     Write-Host "Nah, can't find manifest.json at $manifestPath, mate."
     Write-Host "Run confluence_extractor.ps1 first, or check `$exportDir's pointing at the right spot."
     exit 1
 }
 
-$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+# @()-wrapped: manifest.json legitimately can have exactly one page (the
+# extractor's single-page mode), and ConvertFrom-Json hands back a bare
+# object instead of a one-item array for a one-element JSON array - this
+# script does $manifest.Count further down, which would misfire on that.
+$manifest = @(Get-Content $manifestPath -Raw | ConvertFrom-Json)
 
 # ============================================================
 # PER-PAGE DESTINATION CLASSIFICATION
@@ -62,6 +71,8 @@ $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
 # ============================================================
 
 function New-ClassificationTemplate {
+    # Builds the very first version of page_destinations.csv: one row per
+    # page, with the destination column left blank for you to fill in.
     param([array]$pages, [string]$path)
 
     $rows = foreach ($pageEntry in $pages) {
@@ -76,6 +87,8 @@ function New-ClassificationTemplate {
 }
 
 if (-not (Test-Path $classificationPath)) {
+    # No CSV yet - this must be the first time this script's been run.
+    # Create the template and stop here so it can be filled in by hand.
     Write-Host "First time running this, so no page_destinations.csv yet."
     Write-Host "Chucking one together now at: $classificationPath"
 
@@ -92,12 +105,17 @@ if (-not (Test-Path $classificationPath)) {
 # manifest but missing from the CSV (e.g. new pages from a later extractor
 # run), without touching rows that have already been classified.
 $existingRows = Import-Csv -Path $classificationPath
+# A quick lookup table: page id -> whatever's currently in its destination
+# column (could be blank if not filled in yet).
 $classificationLookup = @{}
 foreach ($row in $existingRows) {
     $classificationLookup[$row.id] = $row.destination
 }
 
 $newRowsAdded = $false
+# Go through every page in the manifest: if it's already got a row in the
+# CSV, keep its existing destination; if it's a brand new page (not in
+# the CSV yet), add a fresh row for it with a blank destination.
 $allRows = foreach ($pageEntry in $manifest) {
     if (-not $classificationLookup.ContainsKey($pageEntry.id)) {
         $newRowsAdded = $true
@@ -117,6 +135,9 @@ $allRows = foreach ($pageEntry in $manifest) {
 }
 
 if ($newRowsAdded) {
+    # Found pages the CSV didn't know about yet - save the updated CSV
+    # (with blank destinations for the new ones) and stop so those can be
+    # filled in before continuing.
     $allRows | Export-Csv -Path $classificationPath -NoTypeInformation -Encoding UTF8
     Write-Host "Found some new pages since the CSV was last filled in, added"
     Write-Host "them to $classificationPath with a blank destination."
@@ -133,8 +154,8 @@ foreach ($row in $allRows) {
 
 # ============================================================
 # XML NAMESPACE SETUP
-# Confluence storage format uses ac: and ri: prefixes for its own elements
-# (macros, images, attachment references) alongside plain XHTML. We declare
+# Confluence storage format uses ac: and ri: prefixed elements (macros,
+# images, attachment references) alongside plain XHTML. We declare
 # those namespaces so the XML parser doesn't choke on them.
 # ============================================================
 $namespaceDeclarations = @'
@@ -177,6 +198,16 @@ function ConvertTo-XmlSafeEntities {
     return $result
 }
 
+function Set-Utf8NoBomContent {
+    # Set-Content -Encoding UTF8 adds a BOM on Windows PowerShell 5.1 (not
+    # on PowerShell 7, which quietly changed this default) - bypassing it
+    # with a direct .NET write keeps content.md byte-identical to the
+    # Python converter's output regardless of which PowerShell version
+    # wrote it.
+    param([string]$Path, [string]$Value)
+    [System.IO.File]::WriteAllText($Path, $Value, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 # Set once per page (see the main loop below) to that page's manifest
 # "attachments" entry, mapping the original Confluence filename to whatever
 # it actually got saved as - the "image" case above consults it to build a
@@ -184,6 +215,9 @@ function ConvertTo-XmlSafeEntities {
 $script:currentAttachmentMap = @{}
 
 function Get-AttachmentMap {
+    # Turns one page's "attachments" manifest entry into a simple lookup:
+    # original Confluence filename -> whatever it actually got saved as
+    # on disk.
     param($attachments)
 
     $map = @{}
@@ -201,71 +235,192 @@ function Get-AttachmentMap {
     return $map
 }
 
+# Loaded once (see the main loop below) from user_display_names.json -
+# @mentions only carry an opaque userkey/username in the storage HTML,
+# this is the extractor's best-effort resolution of those to a real name.
+$script:userDisplayNames = @{}
+
+function Get-UserDisplayNames {
+    # Loads the userkey/username -> real name lookup table the extractor
+    # built, if one exists (older exports won't have this file at all,
+    # which is fine - @mentions just show the raw ID instead).
+    $path = Join-Path $exportDir "user_display_names.json"
+    if (-not (Test-Path $path)) {
+        return @{}
+    }
+    $map = @{}
+    $data = Get-Content $path -Raw | ConvertFrom-Json
+    foreach ($property in $data.PSObject.Properties) {
+        $map[$property.Name] = $property.Value
+    }
+    return $map
+}
+
 function Convert-NodeToMarkdown {
+    # This is the heart of the whole script. It walks through one XML
+    # element's contents piece by piece (plain text, or another nested
+    # element), and for each piece decides what Markdown it should turn
+    # into - a heading becomes "# text", bold text gets wrapped in **, a
+    # list becomes "- item" lines, and so on. It calls itself
+    # recursively for anything nested inside another element (e.g. bold
+    # text inside a paragraph inside a list item).
     param(
         [System.Xml.Linq.XElement]$node,
+        # How deeply nested inside lists we currently are, so a list
+        # inside a list gets extra indentation.
         [int]$listDepth = 0
     )
 
+    # Builds up the resulting Markdown text piece by piece as we go.
     $stringBuilder = New-Object System.Text.StringBuilder
 
     foreach ($childNode in $node.Nodes()) {
 
         if ($childNode -is [System.Xml.Linq.XText]) {
+            # Plain text (not a tag) - just add it as-is.
             [void]$stringBuilder.Append($childNode.Value)
             continue
         }
 
         if ($childNode -isnot [System.Xml.Linq.XElement]) { continue }
 
+        # Which HTML/Confluence tag is this? (e.g. "p", "strong", "table")
         $tagName = $childNode.Name.LocalName
 
         switch ($tagName) {
+            # Headings: "# ", "## ", etc, one # per heading level.
             "h1" { [void]$stringBuilder.Append("`n# " + (Convert-NodeToMarkdown $childNode) + "`n") }
             "h2" { [void]$stringBuilder.Append("`n## " + (Convert-NodeToMarkdown $childNode) + "`n") }
             "h3" { [void]$stringBuilder.Append("`n### " + (Convert-NodeToMarkdown $childNode) + "`n") }
             "h4" { [void]$stringBuilder.Append("`n#### " + (Convert-NodeToMarkdown $childNode) + "`n") }
             "h5" { [void]$stringBuilder.Append("`n##### " + (Convert-NodeToMarkdown $childNode) + "`n") }
             "h6" { [void]$stringBuilder.Append("`n###### " + (Convert-NodeToMarkdown $childNode) + "`n") }
+            # A paragraph just gets a blank line before and after it.
             "p"  { [void]$stringBuilder.Append("`n" + (Convert-NodeToMarkdown $childNode) + "`n") }
+            # A manual line break within a paragraph.
             "br" { [void]$stringBuilder.Append("`n") }
+            # Bold text: wrap in **.
             "strong" { [void]$stringBuilder.Append("**" + (Convert-NodeToMarkdown $childNode) + "**") }
             "b"      { [void]$stringBuilder.Append("**" + (Convert-NodeToMarkdown $childNode) + "**") }
+            # Italic text: wrap in *.
             "em"     { [void]$stringBuilder.Append("*" + (Convert-NodeToMarkdown $childNode) + "*") }
             "i"      { [void]$stringBuilder.Append("*" + (Convert-NodeToMarkdown $childNode) + "*") }
+            # Inline code: wrap in backticks.
             "code"   { [void]$stringBuilder.Append("``" + (Convert-NodeToMarkdown $childNode) + "``") }
 
             "a" {
+                # A regular hyperlink - <a href="...">link text</a>
+                # becomes [link text](...) in Markdown.
                 $hrefAttribute = $childNode.Attribute("href")
                 $linkText = Convert-NodeToMarkdown $childNode
                 if ($hrefAttribute) {
                     [void]$stringBuilder.Append("[$linkText]($($hrefAttribute.Value))")
                 } else {
+                    # No actual link address, just keep the visible text.
                     [void]$stringBuilder.Append($linkText)
                 }
             }
 
             "link" {
-                # Confluence's internal page-to-page link (<ac:link>). There's
-                # no stable URL to point to here (it depends where the target
-                # page ends up after migration), so keep the visible text and
-                # flag it rather than silently dropping it, which is what
-                # happened before: it fell through to the "default" case and
-                # the href/target vanished with no trace.
+                # <ac:link> covers three different reference types depending
+                # on which ri: child it wraps - page, attachment, or user -
+                # and only the page case genuinely has no resolvable target
+                # yet.
+                # Work out which of the three kinds of link this actually is.
                 $pageRef = $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "page" } | Select-Object -First 1
-                $targetTitleAttribute = if ($pageRef) { $pageRef.Attributes() | Where-Object { $_.Name.LocalName -eq "content-title" } | Select-Object -First 1 } else { $null }
-                $targetTitle = if ($targetTitleAttribute) { $targetTitleAttribute.Value } else { $null }
+                $attachmentRef = $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "attachment" } | Select-Object -First 1
+                $userRef = $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "user" } | Select-Object -First 1
                 $linkText = (Convert-NodeToMarkdown $childNode).Trim()
-                $displayText = if ($linkText) { $linkText } elseif ($targetTitle) { $targetTitle } else { "link" }
 
-                if ($targetTitle) {
-                    [void]$stringBuilder.Append("$displayText <!-- internal Confluence link, unresolved: `"$targetTitle`" -->")
+                if ($attachmentRef) {
+                    # Link to a downloadable attachment (not an <ac:image>
+                    # embed) - unlike a page link, we already know exactly
+                    # where this file ends up (same attachment map images
+                    # use), so resolve it properly instead of flagging it.
+                    $filenameAttribute = $attachmentRef.Attributes() | Where-Object { $_.Name.LocalName -eq "filename" } | Select-Object -First 1
+                    if ($filenameAttribute) {
+                        $filename = $filenameAttribute.Value
+                        $savedName = if ($script:currentAttachmentMap.ContainsKey($filename)) { $script:currentAttachmentMap[$filename] } else { $filename }
+                        $displayText = if ($linkText) { $linkText } else { $filename }
+                        [void]$stringBuilder.Append("[$displayText](<images/$savedName>)")
+                    } else {
+                        [void]$stringBuilder.Append($(if ($linkText) { $linkText } else { "attachment" }))
+                    }
+                }
+                elseif ($userRef) {
+                    # @mention - Confluence resolves this to a live profile
+                    # link we have no equivalent for, so at minimum keep the
+                    # person's name visible instead of losing who was
+                    # mentioned entirely.
+                    # Find whichever identifier (key or username) this
+                    # mention actually carries, then look up their real
+                    # name from the table the extractor built.
+                    $userKeyAttribute = $userRef.Attributes() | Where-Object { $_.Name.LocalName -eq "userkey" } | Select-Object -First 1
+                    $usernameAttribute = $userRef.Attributes() | Where-Object { $_.Name.LocalName -eq "username" } | Select-Object -First 1
+                    $rawId = if ($userKeyAttribute) { $userKeyAttribute.Value } elseif ($usernameAttribute) { $usernameAttribute.Value } else { $null }
+                    $displayName = if ($rawId -and $script:userDisplayNames.ContainsKey($rawId)) { $script:userDisplayNames[$rawId] } else { $null }
+                    $shown = if ($displayName) { $displayName } elseif ($linkText) { $linkText } elseif ($rawId) { $rawId } else { "mentioned user" }
+                    [void]$stringBuilder.Append("@$shown")
+                }
+                else {
+                    # Page link: no stable URL until the target's actually
+                    # migrated, so keep the text and flag it instead of
+                    # dropping it (used to fall through to the "default"
+                    # case and vanish with no trace).
+                    $targetTitleAttribute = if ($pageRef) { $pageRef.Attributes() | Where-Object { $_.Name.LocalName -eq "content-title" } | Select-Object -First 1 } else { $null }
+                    $targetTitle = if ($targetTitleAttribute) { $targetTitleAttribute.Value } else { $null }
+                    $displayText = if ($linkText) { $linkText } elseif ($targetTitle) { $targetTitle } else { "link" }
+
+                    if ($targetTitle) {
+                        [void]$stringBuilder.Append("$displayText <!-- internal Confluence link, unresolved: `"$targetTitle`" -->")
+                    } else {
+                        [void]$stringBuilder.Append("$displayText <!-- internal Confluence link, unresolved -->")
+                    }
+                }
+            }
+
+            "emoticon" {
+                # Self-closing - <ac:emoticon ac:name="smile" ac:emoji-fallback="🙂"/>
+                # emoji-fallback (when present) is the literal character, best
+                # case. Older content without it just gets a Slack/GitHub-style
+                # :name:.
+                $fallbackAttribute = $childNode.Attributes() | Where-Object { $_.Name.LocalName -eq "emoji-fallback" } | Select-Object -First 1
+                if ($fallbackAttribute) {
+                    [void]$stringBuilder.Append($fallbackAttribute.Value)
                 } else {
-                    [void]$stringBuilder.Append("$displayText <!-- internal Confluence link, unresolved -->")
+                    $nameAttribute = $childNode.Attributes() | Where-Object { $_.Name.LocalName -eq "name" } | Select-Object -First 1
+                    if ($nameAttribute) {
+                        [void]$stringBuilder.Append(":$($nameAttribute.Value):")
+                    }
+                }
+            }
+
+            "task-list" {
+                # Convert-NodeToMarkdown walks a node's CHILDREN through the
+                # switch - it can't dispatch on a <ac:task> element's own
+                # tag, so its status/body have to be pulled out directly
+                # here rather than recursing into it expecting a "task" case
+                # to fire (it never would - there's no separate per-element
+                # dispatcher the way the Python converter has).
+                [void]$stringBuilder.Append("`n")
+                # A checklist - go through each <ac:task> and turn it into
+                # a Markdown checkbox line: "- [x] done thing" or
+                # "- [ ] not done yet".
+                foreach ($taskItem in $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "task" }) {
+                    $statusNode = $taskItem.Elements() | Where-Object { $_.Name.LocalName -eq "task-status" } | Select-Object -First 1
+                    $bodyNode = $taskItem.Elements() | Where-Object { $_.Name.LocalName -eq "task-body" } | Select-Object -First 1
+                    $isComplete = $statusNode -and ($statusNode.Value.Trim().ToLower() -eq "complete")
+                    $bodyText = if ($bodyNode) { (Convert-NodeToMarkdown $bodyNode $listDepth).Trim() } else { "" }
+                    $indent = "  " * $listDepth
+                    $checkbox = if ($isComplete) { "x" } else { " " }
+                    [void]$stringBuilder.Append("$indent- [$checkbox] $bodyText`n")
                 }
             }
 
             "ul" {
+                # A bulleted list - each <li> becomes a "- " line. Nested
+                # lists get extra indentation ($listDepth + 1 when
+                # recursing into each item).
                 [void]$stringBuilder.Append("`n")
                 foreach ($listItem in $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "li" }) {
                     $indent = "  " * $listDepth
@@ -274,6 +429,8 @@ function Convert-NodeToMarkdown {
             }
 
             "ol" {
+                # A numbered list - same idea as above, but with 1. 2. 3.
+                # instead of a bullet.
                 [void]$stringBuilder.Append("`n")
                 $itemNumber = 1
                 foreach ($listItem in $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "li" }) {
@@ -284,6 +441,9 @@ function Convert-NodeToMarkdown {
             }
 
             "table" {
+                # A table becomes a Markdown pipe table: "| cell | cell |"
+                # rows, with a "| --- | --- |" separator line right after
+                # the first (header) row.
                 [void]$stringBuilder.Append("`n")
                 $tableRows = $childNode.Descendants() | Where-Object { $_.Name.LocalName -eq "tr" }
                 $rowIndex = 0
@@ -298,6 +458,8 @@ function Convert-NodeToMarkdown {
                     [void]$stringBuilder.Append("| " + ($cellTexts -join " | ") + " |`n")
 
                     if ($rowIndex -eq 0) {
+                        # Right after the header row, add the required
+                        # "| --- | --- |" separator line.
                         $headerSeparator = ($cellTexts | ForEach-Object { "---" }) -join " | "
                         [void]$stringBuilder.Append("| " + $headerSeparator + " |`n")
                     }
@@ -327,6 +489,8 @@ function Convert-NodeToMarkdown {
                         [void]$stringBuilder.Append("`n![$filename](<images/$savedName>)`n")
                     }
                 } elseif ($urlRef) {
+                    # An externally-hosted image (not a Confluence
+                    # attachment) - just link straight to its URL.
                     $valueAttribute = $urlRef.Attributes() | Where-Object { $_.Name.LocalName -eq "value" } | Select-Object -First 1
                     if ($valueAttribute) {
                         [void]$stringBuilder.Append("`n![image](<$($valueAttribute.Value)>)`n")
@@ -335,15 +499,23 @@ function Convert-NodeToMarkdown {
             }
 
             "structured-macro" {
+                # Confluence's "macros" - special blocks like code
+                # samples, coloured info/warning panels, or anything more
+                # exotic (page trees, Jira embeds, etc). We only know how
+                # to properly translate a few kinds; everything else falls
+                # through to the "else" branch below.
                 $macroNameAttribute = $childNode.Attributes() | Where-Object { $_.Name.LocalName -eq "name" } | Select-Object -First 1
                 $macroName = if ($macroNameAttribute) { $macroNameAttribute.Value } else { "unknown" }
 
                 if ($macroName -eq "code") {
+                    # A code block - wrap it in triple-backtick fences.
                     $bodyNode = $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "plain-text-body" } | Select-Object -First 1
                     $codeText = if ($bodyNode) { $bodyNode.Value } else { "" }
                     [void]$stringBuilder.Append("`n``````" + "`n$codeText`n" + "``````" + "`n")
                 }
                 elseif ($macroName -in @("info", "note", "warning", "tip")) {
+                    # A coloured panel - turn it into a Markdown blockquote
+                    # with a bold label showing which kind it was.
                     $bodyNode = $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "rich-text-body" } | Select-Object -First 1
                     $innerText = if ($bodyNode) { (Convert-NodeToMarkdown $bodyNode).Trim() } else { "" }
                     $panelLabel = $macroName.ToUpper()
@@ -377,19 +549,27 @@ function Convert-NodeToMarkdown {
 # azure, sharepoint, or unsorted (if blank or an unrecognised value).
 # ============================================================
 
+$script:userDisplayNames = Get-UserDisplayNames
+
 $totalPages = $manifest.Count
 $pageIndex = 0
+# Anything that goes wrong on a specific page gets noted here rather than
+# stopping the whole run - reported as a summary at the end.
 $conversionWarnings = @()
 $destinationCounts = @{ azure = 0; sharepoint = 0; unsorted = 0 }
 
+# Go through every page in the manifest, one at a time.
 foreach ($pageEntry in $manifest) {
     $pageIndex++
     $htmlPath = Join-Path $exportDir (Join-Path $pageEntry.folder $pageEntry.html_file)
 
+    # Look up what this page was classified as in the CSV.
     $rawDestination = $classificationLookup[$pageEntry.id]
     $destinationBucket = if ($rawDestination -eq "azure" -or $rawDestination -eq "sharepoint") {
         $rawDestination
     } else {
+        # Blank, or something that isn't "azure"/"sharepoint" (a typo,
+        # say) - park it in "unsorted" rather than guessing.
         "unsorted"
     }
     $destinationCounts[$destinationBucket]++
@@ -403,6 +583,8 @@ foreach ($pageEntry in $manifest) {
     Write-Host "[$pageIndex/$totalPages] ($destinationBucket) $($pageEntry.title)"
 
     if (-not (Test-Path $htmlPath)) {
+        # The manifest mentions this page, but its content.html is
+        # missing - can't convert something that isn't there.
         Write-Host "    Nah, skipped: content.html not found at $htmlPath"
         $conversionWarnings += "$($pageEntry.title): content.html not found"
         continue
@@ -418,28 +600,39 @@ foreach ($pageEntry in $manifest) {
         # and a new content.md sitting side by side.
         Get-ChildItem -Path $destinationFolder -Filter "*.md" -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
+        # Read the page's raw content, and fix up any named entities
+        # (like &nbsp;) the XML parser wouldn't otherwise understand.
         $rawHtml = Get-Content $htmlPath -Raw -Encoding UTF8
         $rawHtml = ConvertTo-XmlSafeEntities $rawHtml
 
+        # Build this page's own filename -> saved_as lookup, used by the
+        # "image"/"link" cases above while converting this specific page.
         $script:currentAttachmentMap = Get-AttachmentMap $pageEntry.attachments
 
         # Wrap in a root element with the Confluence namespaces declared,
         # so the XML parser understands ac: and ri: prefixed tags.
         $wrappedHtml = "<root $namespaceDeclarations>$rawHtml</root>"
 
+        # Actually parse the page content as XML now that it's wrapped
+        # and entity-safe.
         $xmlDocument = [System.Xml.Linq.XDocument]::Parse($wrappedHtml)
         $rootElement = $xmlDocument.Root
 
+        # This is where the real conversion happens - walk the whole page
+        # and turn it into Markdown text.
         $markdownBody = Convert-NodeToMarkdown $rootElement
 
         # Tidy up: collapse more than 2 consecutive blank lines
         $markdownBody = $markdownBody -replace "(`n\s*){3,}", "`n`n"
         $markdownBody = $markdownBody.Trim() + "`n"
 
+        # Stick a "# Page Title" heading (and a Tags line, if this page
+        # has any labels) on the very top of the file.
         $pageTitle = $pageEntry.title
-        $finalMarkdown = "# $pageTitle`n`n$markdownBody"
+        $tagsLine = if ($pageEntry.labels -and $pageEntry.labels.Count -gt 0) { "**Tags:** $($pageEntry.labels -join ', ')`n`n" } else { "" }
+        $finalMarkdown = "# $pageTitle`n`n$tagsLine$markdownBody"
 
-        Set-Content -Path $markdownPath -Value $finalMarkdown -Encoding UTF8
+        Set-Utf8NoBomContent -Path $markdownPath -Value $finalMarkdown
 
         # Copy this page's images across too, so the destination folder is
         # fully self-contained and ready to upload without touching the
@@ -451,6 +644,9 @@ foreach ($pageEntry in $manifest) {
         }
     }
     catch {
+        # Something about converting this one page failed (e.g. broken
+        # XML in its content.html) - note it and move on to the next
+        # page rather than stopping the whole run.
         Write-Host "    Yeah nah, that one's carked it: '$($pageEntry.title)': $($_.Exception.Message)"
         $conversionWarnings += "$($pageEntry.title): $($_.Exception.Message)"
     }
@@ -550,6 +746,8 @@ function Test-DestinationPathLength {
         [int]$maxLength
     )
 
+    # Build the full path the way it would actually look once uploaded,
+    # then just measure how long that text is.
     $fullPath = if ($repoUrlPrefix) {
         "$repoUrlPrefix/$folderPath/$fileName"
     } else {
@@ -585,6 +783,8 @@ function Invoke-DestinationCheck {
         Write-Host "on upload even if this check reckons they're fine."
     }
 
+    # Check every page in this bucket, and remember any that end up over
+    # the length limit.
     $affectedPages = @()
 
     foreach ($pageEntry in $pagesInBucket) {
@@ -609,6 +809,7 @@ function Invoke-DestinationCheck {
     }
 
     if ($affectedPages.Count -eq 0) {
+        # Nothing's too long - nothing more to do here.
         Write-Host "She's right, all $destinationName page paths are within the $maxPathLength character limit."
         return
     }
@@ -621,6 +822,7 @@ function Invoke-DestinationCheck {
     $shouldFix = Read-Host "`nWant these shortened automatically so they're $destinationName-compliant? (y/n)"
 
     if ($shouldFix -ne "y") {
+        # They said no - leave the files as they are and just warn.
         Write-Host "`nFair enough, left as-is. These pages will probably fall over on"
         Write-Host "upload to $destinationName though, worth a look before you push."
         return
@@ -645,6 +847,7 @@ function Invoke-DestinationCheck {
         $currentMarkdownPath = Join-Path $destinationFolder "content.md"
 
         if (Test-Path $currentMarkdownPath) {
+            # Rename the file we already wrote earlier to this shorter name.
             Rename-Item -Path $currentMarkdownPath -NewName $shortenedName -Force
             Write-Host "  Sorted: $($affected.Title)"
             Write-Host "    -> $shortenedName"
@@ -664,13 +867,20 @@ function Invoke-DestinationCheck {
     }
 }
 
-$azurePages = $manifest | Where-Object { $classificationLookup[$_.id] -eq "azure" }
-$sharePointPages = $manifest | Where-Object { $classificationLookup[$_.id] -eq "sharepoint" }
+# @()-wrapped: without it, exactly one page matching a bucket (easy to hit
+# early in a migration, or a small space) would have PowerShell unwrap the
+# filtered result to a bare object instead of a one-item array, and the
+# .Count checks just below would misfire.
+$azurePages = @($manifest | Where-Object { $classificationLookup[$_.id] -eq "azure" })
+$sharePointPages = @($manifest | Where-Object { $classificationLookup[$_.id] -eq "sharepoint" })
 
 if ($azurePages.Count -eq 0 -and $sharePointPages.Count -eq 0) {
+    # Nothing's been classified yet at all - nothing to check.
     Write-Host "`nNo pages classified as azure or sharepoint yet, skipping the length check."
 }
 else {
+    # Only run the check for a destination that actually has pages
+    # heading to it.
     if ($azurePages.Count -gt 0) {
         Invoke-DestinationCheck -bucket "azure" -destinationName "Azure DevOps Wiki" -maxPathLength $azureMaxPathLength `
             -urlPrompt "Azure DevOps wiki repo URL (e.g. https://dev.azure.com/yourorg/yourproject/_git/yourproject.wiki)" `

@@ -15,6 +15,7 @@ import base64
 import getpass
 import json
 import os
+import re
 import ssl
 import time
 import urllib.error
@@ -153,7 +154,7 @@ def get_all_pages_in_space():
                 "type": "page",
                 "start": start,
                 "limit": PAGE_SIZE,
-                "expand": "body.storage,version,ancestors",
+                "expand": "body.storage,version,ancestors,metadata.labels",
             },
         )
 
@@ -171,7 +172,25 @@ def get_all_pages_in_space():
 
 
 def get_single_page(page_id):
-    return api_get(f"/rest/api/content/{page_id}", {"expand": "body.storage,version,ancestors"})
+    return api_get(f"/rest/api/content/{page_id}", {"expand": "body.storage,version,ancestors,metadata.labels"})
+
+
+# @mentions in the storage HTML reference a user by an opaque userkey (or
+# occasionally a username on older content) with no display name anywhere
+# in the page itself - Confluence resolves that live, client-side. Regexes
+# over the raw HTML, not real XML parsing, since this is the only thing in
+# the extractor that needs to look inside page content at all.
+USERKEY_PATTERN = re.compile(r'<ri:user\b[^>]*\bri:userkey="([^"]+)"')
+USERNAME_PATTERN = re.compile(r'<ri:user\b[^>]*\bri:username="([^"]+)"')
+
+
+def resolve_user_display_name(user_key=None, username=None):
+    params = {"key": user_key} if user_key else {"username": username}
+    try:
+        data = api_get("/rest/api/user", params)
+        return data.get("displayName")
+    except Exception:
+        return None
 
 
 def get_attachments_for_page(page_id):
@@ -209,6 +228,8 @@ def main():
 
     manifest = []
     failures = []
+    mentioned_user_keys = set()
+    mentioned_usernames = set()
 
     for index, page in enumerate(pages, start=1):
         page_id = page["id"]
@@ -218,6 +239,9 @@ def main():
 
         try:
             html_body = page.get("body", {}).get("storage", {}).get("value", "")
+
+            mentioned_user_keys.update(USERKEY_PATTERN.findall(html_body))
+            mentioned_usernames.update(USERNAME_PATTERN.findall(html_body))
 
             page_folder = os.path.join(pages_dir, f"{page_id}_{safe_title[:50]}")
             os.makedirs(page_folder, exist_ok=True)
@@ -267,6 +291,8 @@ def main():
             ancestors = page.get("ancestors", [])
             parent = ancestors[-1] if ancestors else None
 
+            labels = [label["name"] for label in page.get("metadata", {}).get("labels", {}).get("results", [])]
+
             manifest.append({
                 "id": page_id,
                 "title": title,
@@ -275,6 +301,7 @@ def main():
                 "attachments": attachment_records,
                 "parent_id": parent["id"] if parent else None,
                 "parent_title": parent["title"] if parent else None,
+                "labels": labels,
                 "version": page.get("version", {}).get("number"),
             })
 
@@ -283,6 +310,28 @@ def main():
             failures.append({"id": page_id, "title": title, "error": str(e)})
 
         time.sleep(REQUEST_DELAY_SECONDS)
+
+    # @mentions only give us an opaque userkey/username, so resolve each
+    # one (once) to the name that's actually worth showing. Best-effort:
+    # a lookup failing (e.g. a deleted user) just leaves that one out,
+    # the converter falls back to showing the raw identifier instead.
+    user_display_names = {}
+    if mentioned_user_keys or mentioned_usernames:
+        print(f"\nResolving {len(mentioned_user_keys) + len(mentioned_usernames)} mentioned user(s)...")
+        for user_key in mentioned_user_keys:
+            display_name = resolve_user_display_name(user_key=user_key)
+            if display_name:
+                user_display_names[user_key] = display_name
+            time.sleep(REQUEST_DELAY_SECONDS)
+        for username in mentioned_usernames:
+            display_name = resolve_user_display_name(username=username)
+            if display_name:
+                user_display_names[username] = display_name
+            time.sleep(REQUEST_DELAY_SECONDS)
+
+        user_display_names_path = os.path.join(OUTPUT_DIR, "user_display_names.json")
+        with open(user_display_names_path, "w", encoding="utf-8") as f:
+            json.dump(user_display_names, f, indent=2, ensure_ascii=False)
 
     # Save a manifest so the Markdown conversion step knows what's here
     manifest_path = os.path.join(OUTPUT_DIR, "manifest.json")

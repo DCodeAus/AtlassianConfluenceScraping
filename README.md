@@ -31,6 +31,8 @@ If an older version of a script ever did have real credentials typed into it and
 | `confluence_html_to_markdown.py` | Same conversion and routing, Python standard library only. Use this one if you don't have PowerShell (e.g. extracted on Mac/Linux). |
 | `confluence_sharepoint_paste.ps1` | Turns each page classified "sharepoint" into a standalone .html file ready to copy-paste into a new SharePoint page. See "Getting pages into SharePoint" below. |
 | `confluence_sharepoint_paste.py` | Same thing, Python standard library only. |
+| `confluence_table_to_csv.ps1` | Pulls one table off one page (an on-call register, say) and writes it as a CSV - better off as a real SharePoint List than a wiki page, and SharePoint can create a List straight from a CSV itself, no upload script needed. |
+| `confluence_table_to_csv.py` | Same thing, Python standard library only. |
 | `repair_garbled_text.ps1` | Fixes up `content.html`/`content.md` files already extracted with the old `.ps1` encoding bug (garbled accents/quotes/dashes, see Troubleshooting below). Only needed once, for content pulled before that fix landed. |
 | `repair_garbled_text.py` | Same repair, Python standard library only. |
 | `runningPythonScriptsInVSCode.md` | If Python in VS Code is giving you grief (PATH errors, nothing happening when you hit run), this walks through it. |
@@ -86,6 +88,16 @@ Each page's images are copied alongside its `content.md`. Your original `conflue
 
 If it hits a Confluence macro it doesn't recognise (a page tree, a Jira embed, something obscure), it doesn't just drop the content, it keeps whatever text was visible and flags the spot with a comment (`<!-- unrecognised macro: ... -->`) so you can go back and check it manually. Links to other Confluence pages get the same treatment, since there's no way to know the page's new URL until it's actually been migrated: the link text is kept, tagged with `<!-- internal Confluence link, unresolved: "..." -->`, so you can find and fix these up once everything's landed in its new home.
 
+A few other Confluence-specific things get carried across properly rather than falling into that generic "unrecognised" bucket:
+
+- **Links to attachments** (a PDF, a spreadsheet, anything besides an embedded image) resolve to the actual downloaded file, same as images.
+- **@mentions** show the person's real name, not just a raw internal ID - this needs the extractor to resolve each mentioned user via the Confluence API, which it does once per space (not per page), saving the result to `confluence_export/user_display_names.json`.
+- **Emoji/emoticons** come through as the real emoji character where Confluence provides one, or a `:name:`-style fallback otherwise.
+- **Task lists** (checkboxes) keep their checked/unchecked state - real Markdown task list syntax (`- [x]`) in the `.md` export, a ☑/☐ prefix in the SharePoint paste export since real checkboxes don't survive a copy-paste.
+- **Page labels** show up as a `**Tags:** label1, label2` line under the title, in both exports.
+
+All five need a re-extraction to pick up on content pulled before this landed - the underlying data (page labels, mentioned users, resolvable attachment links) isn't in an older `manifest.json`, so these features just don't trigger rather than showing anything wrong.
+
 **The length/naming check runs automatically** for whichever destinations actually have pages that run, no need to choose anything, since that's already decided per page by the CSV. For each destination present, it checks every page's file path against that platform's actual limits, Azure caps out at 235 characters total and turns spaces into hyphens, SharePoint's more generous at 400 characters but blocks a different set of characters. Anything too long gets flagged, and it'll offer to shorten the file names automatically so nothing fails on upload. You'll be asked for the real destination URL for a precise check, or you can leave it blank for an estimate, either way it tells you plainly which one you're getting.
 
 Pages still sitting in `unsorted` don't go through this check at all, sort them into the CSV and re-run first.
@@ -106,7 +118,7 @@ against your `sharepoint/`-classified pages once they're converted. This doesn't
 
 Two things it can't do automatically, so it flags them instead:
 
-- **Images** - a pasted `<img src="local/path">` has nothing to load once it's sitting in a browser's clipboard (there's no server behind a relative local file path), so each image becomes a visible `[INSERT IMAGE HERE: ...]` note telling you which file to drag in yourself, using SharePoint's own image tool, from the `images/` folder sitting next to that page's `content.html`.
+- **Images and attachments** - a pasted `<img src="local/path">` or `<a href="local/path">` has nothing to load once it's sitting in a browser's clipboard (there's no server behind a relative local file path), so each becomes a visible note - `[INSERT IMAGE HERE: ...]` or `[ATTACH FILE HERE: ...]` - telling you which file to add yourself, using SharePoint's own image/attachment tools, from the `images/` folder sitting next to that page's `content.html`.
 - **Internal links and unrecognised macros** - same visible-marker treatment as the Markdown export (`[UNRESOLVED LINK: "..."]`, `[UNRECOGNISED CONFLUENCE MACRO: ...]`), just as plain text instead of an HTML comment, since comments silently vanish when you copy-paste into a rich text editor and the whole point is that you notice these.
 
 The first line of each page is a reminder of what to set as the SharePoint page's title, meant to be deleted once you've used it, since the real title field lives in SharePoint's own page-creation dialog, not in the pasted body.
@@ -114,6 +126,21 @@ The first line of each page is a reminder of what to set as the SharePoint page'
 **Related pages block:** SharePoint has no direct equivalent of Confluence's always-visible page tree sidebar, so each page ends with its own "Related pages" section instead, listing its parent and direct sub-pages by title (same `[UNRESOLVED LINK: "..."]` treatment, since none of these have real SharePoint URLs until they're actually migrated). This needs the extractor to have pulled each page's Confluence ancestry, which only started being recorded once this feature landed - if your `confluence_export` predates it, re-run `confluence_extractor.py`/`.ps1` to pick it up, otherwise this section just won't appear.
 
 If you *do* have (or can get) the Entra ID access this needs, the Graph API's Pages endpoint (`POST /sites/{siteId}/pages`) is the real automation path, at that point it's worth building a proper upload script instead of this copy-paste workflow.
+
+## Pages that are really just a table
+
+Some pages (an on-call register, say - person, dates, notes) aren't wiki content at all, they're a table, and they belong in SharePoint as an actual **List**, not a page: filterable, sortable, a Calendar view if it's date-based, and you can wire up a Power Automate flow against it. Creating that List doesn't need any API access, SharePoint builds one straight from a CSV through its own UI. So:
+
+```
+.\confluence_table_to_csv.ps1 "On Call Register"
+```
+or
+```
+python confluence_table_to_csv.py "On Call Register"
+```
+(a page id works too, instead of the title)
+
+pulls every table off that one page and writes each as a CSV into `confluence_table_export/`. In SharePoint: **Create list → From CSV/Excel**, point it at the file, done. Every column comes in as plain text, if you want a real Person column (photo, presence) or a proper Date column, change the column type after import, a CSV can't carry that metadata.
 
 ## What you need installed
 
@@ -123,14 +150,44 @@ If you *do* have (or can get) the Entra ID access this needs, the Graph API's Pa
   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
   ```
 
-## Getting started
+## Getting started - which script, in what order
 
-1. Grab this repo.
-2. Open whichever script you're starting with and fill in `BASE_URL` and `SPACE_KEY` near the top, that's it, nothing sensitive to type in.
-3. Run it:
-   - Python: `python confluence_auth_test.py`
-   - PowerShell: `.\confluence_auth_test.ps1`
-4. You'll be prompted for your username and password when it runs.
+New to this? Here's the order to actually run things in, start to finish. Everything below shows the PowerShell (`.ps1`) command - if you're on Mac/Linux or don't have PowerShell, swap each one for the matching `.py` file (e.g. `python confluence_extractor.py` instead of `.\confluence_extractor.ps1`), same order, same steps.
+
+1. **Grab this repo**, somewhere you can find it again.
+
+2. **Test you can actually connect.** Open `confluence_auth_test.ps1` in a text editor, fill in `$BaseUrl` and `$SpaceKey` near the top (just your Confluence site address and space code, nothing sensitive), save, then run:
+   ```
+   .\confluence_auth_test.ps1
+   ```
+   It'll ask for your username and password right there in the terminal - nothing gets saved anywhere. If it prints a page title back, you're good to move on. If it prints an error instead, check the "When something goes wrong" table below before going any further - no point discovering a login problem 200 pages into a real run.
+
+3. **Already extracted something with this project before, on an older copy of these scripts?** Check whether your `confluence_export` folder has weird garbled characters in it, e.g. `Â` where a space or accent should be, or `â€™` instead of an apostrophe. If it does, run the repair script once before doing anything else:
+   ```
+   .\repair_garbled_text.ps1
+   ```
+   That's an old bug, already fixed for anything extracted from here on - if this is your first time running any of these scripts, skip this step entirely, you won't need it.
+
+4. **Pull everything down.** Fill in `$BaseUrl`/`$SpaceKey` in `confluence_extractor.ps1` too (same values as step 2), then run:
+   ```
+   .\confluence_extractor.ps1
+   ```
+   This is the one that actually talks to Confluence and downloads everything - content, images, attachments. Expect it to take a few minutes for a big space, that's normal. See "Pulling everything down" above for what the output looks like while it runs.
+
+5. **Convert it to Markdown, and classify each page.** Run:
+   ```
+   .\confluence_html_to_markdown.ps1
+   ```
+   The first time, this just generates `page_destinations.csv` and stops - open that in Excel, mark each row `azure` or `sharepoint`, save, then run the script again to actually convert everything. See "Turning it into Markdown" above for the full detail.
+
+6. **Get each page into its actual destination:**
+   - Classified `azure` → `git push` the `confluence_markdown_export/azure/` folder into your Azure DevOps Wiki repo. Done.
+   - Classified `sharepoint` → run `.\confluence_sharepoint_paste.ps1`, then copy-paste each resulting page into a new SharePoint page by hand. See "Getting pages into SharePoint" above.
+   - A page that's really just a table (an on-call roster, say)? Run `.\confluence_table_to_csv.ps1 "Page Title"` instead, and create it as a SharePoint List from the CSV. See "Pages that are really just a table" above.
+
+Steps 4-6 are the ones you repeat if new pages get added to the space later. Steps 2 and 3 are one-off checks, not something you run every time.
+
+**If anything above doesn't go the way this describes** - an error, a blank/weird result, a script that seems to hang - it's almost always one of the entries in the "When something goes wrong" table right below this. Check there first before assuming something's broken; most of what's listed there looks alarming but has a one-line fix.
 
 First time running Python, or having trouble with VS Code's terminal? `runningPythonScriptsInVSCode.md` covers the common gotchas.
 
@@ -147,6 +204,9 @@ First time running Python, or having trouble with VS Code's terminal? `runningPy
 | Weird garbled characters in the Markdown, e.g. `Â` where a space or accent should be, or `â€™` instead of an apostrophe | An old bug in `confluence_extractor.ps1`: PowerShell decoded Confluence's UTF-8 response as Windows-1252, mangling anything non-ASCII (accents, curly quotes, dashes). Already fixed in the extractor, so new extractions come out clean. For content you already pulled before the fix, run `repair_garbled_text.ps1` (or `.py`) once against your `confluence_export`/`confluence_markdown_export` folders, it undoes the mis-decode in place and backs up each file it touches as `.bak`. |
 | A converted table looks broken, extra `\|` rows or content spilling out of the table | An old bug: a table cell with more than one paragraph, or a line break in it, produced a real newline in the Markdown, which splits a table row across lines. Already fixed, multi-line cell content now becomes `<br>` instead. No re-extraction needed, just re-run the Markdown converter over your existing `confluence_export`. |
 | An image shows up broken after uploading, even though `content.md` references it | An old bug: the Markdown linked to the image by its original Confluence filename, which can differ from what's actually on disk (special characters get replaced with `_` when saved, and two attachments with the same name get a `_2` suffix). Already fixed, the extractor now records both names so the converter can point at the right file. Only fixes new extractions though, since the old filename mapping wasn't recorded before, re-run the extractor (not just the converter) on affected pages to pick it up. |
+| `confluence_sharepoint_paste.ps1` says "nothing to do" even though you classified a page as `sharepoint`, or a page's one-and-only attachment silently never gets downloaded | An old bug specific to the `.ps1` scripts: PowerShell can silently misread a result set as empty/scalar when it has exactly one item (one page, one attachment, one page landing in a bucket) rather than treating it as a one-item list. Already fixed throughout, extracting or converting just one or two pages to try things out now behaves exactly like a full run. |
+| A Python converter script crashes with a `JSONDecodeError` reading `manifest.json`, but only when it was extracted with `confluence_extractor.ps1` | An old cross-language bug: on Windows PowerShell 5.1, `Set-Content -Encoding UTF8` adds an invisible marker (a BOM) to the front of the file, which Python's `json` module refuses to read. Already fixed on both sides - the PowerShell extractor no longer adds that marker, and the Python scripts tolerate it either way - so extracting with one and converting with the other now works regardless of which combination you use. |
+| Non-ASCII page titles (accents, curly quotes) show up garbled in Excel when you open `page_destinations.csv` | The same class of bug as the "weird garbled characters" row above, just via a different path: Excel needs that same invisible BOM marker to correctly read a UTF-8 CSV, and the Python script writing this file wasn't including it. Already fixed - regenerate the CSV (delete it and re-run the Markdown converter) to get a clean copy. |
 
 ## Where things stand
 
