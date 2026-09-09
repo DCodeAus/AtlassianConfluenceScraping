@@ -151,7 +151,7 @@ function Get-AllPagesInSpace {
 
     while ($true) {
         Write-Host "Fetching page list: start=$start, limit=$PageSize"
-        $uri = "$BaseUrl/rest/api/content?spaceKey=$SpaceKey&type=page&start=$start&limit=$PageSize&expand=body.storage,version"
+        $uri = "$BaseUrl/rest/api/content?spaceKey=$SpaceKey&type=page&start=$start&limit=$PageSize&expand=body.storage,version,ancestors"
         $data = Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
 
         $results = $data.results
@@ -170,7 +170,7 @@ function Get-AllPagesInSpace {
 
 function Get-SinglePage {
     param([string]$PageId)
-    $uri = "$BaseUrl/rest/api/content/${PageId}?expand=body.storage,version"
+    $uri = "$BaseUrl/rest/api/content/${PageId}?expand=body.storage,version,ancestors"
     Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
 }
 
@@ -295,13 +295,20 @@ foreach ($page in $pages) {
             }
         }
 
+        # "ancestors" comes back ordered root-first, so the immediate parent
+        # (if any) is the last one - used to build the "Related pages"
+        # parent/children links in the SharePoint export.
+        $parent = if ($page.ancestors -and $page.ancestors.Count -gt 0) { $page.ancestors[-1] } else { $null }
+
         $manifest += [PSCustomObject]@{
-            id          = $pageId
-            title       = $title
-            folder      = "pages\${pageId}_$shortTitle"
-            html_file   = "content.html"
-            attachments = $attachmentRecords
-            version     = $page.version.number
+            id           = $pageId
+            title        = $title
+            folder       = "pages\${pageId}_$shortTitle"
+            html_file    = "content.html"
+            attachments  = $attachmentRecords
+            parent_id    = if ($parent) { $parent.id } else { $null }
+            parent_title = if ($parent) { $parent.title } else { $null }
+            version      = $page.version.number
         }
     }
     catch {

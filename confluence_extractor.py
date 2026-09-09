@@ -153,7 +153,7 @@ def get_all_pages_in_space():
                 "type": "page",
                 "start": start,
                 "limit": PAGE_SIZE,
-                "expand": "body.storage,version",
+                "expand": "body.storage,version,ancestors",
             },
         )
 
@@ -171,7 +171,7 @@ def get_all_pages_in_space():
 
 
 def get_single_page(page_id):
-    return api_get(f"/rest/api/content/{page_id}", {"expand": "body.storage,version"})
+    return api_get(f"/rest/api/content/{page_id}", {"expand": "body.storage,version,ancestors"})
 
 
 def get_attachments_for_page(page_id):
@@ -261,12 +261,20 @@ def main():
 
                     time.sleep(REQUEST_DELAY_SECONDS)
 
+            # "ancestors" comes back ordered root-first, so the immediate
+            # parent (if any) is the last one - used to build the
+            # "Related pages" parent/children links in the SharePoint export.
+            ancestors = page.get("ancestors", [])
+            parent = ancestors[-1] if ancestors else None
+
             manifest.append({
                 "id": page_id,
                 "title": title,
                 "folder": os.path.relpath(page_folder, OUTPUT_DIR),
                 "html_file": "content.html",
                 "attachments": attachment_records,
+                "parent_id": parent["id"] if parent else None,
+                "parent_title": parent["title"] if parent else None,
                 "version": page.get("version", {}).get("number"),
             })
 
