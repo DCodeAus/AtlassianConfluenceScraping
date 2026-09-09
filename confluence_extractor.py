@@ -15,6 +15,8 @@ import base64
 import getpass
 import json
 import os
+import re
+import shutil
 import ssl
 import time
 import urllib.error
@@ -112,7 +114,11 @@ def download_binary(url_path, dest_path):
 
         with urllib.request.urlopen(request, context=SSL_CONTEXT) as response:
             with open(dest_path, "wb") as f:
-                f.write(response.read())
+                # copyfileobj streams the download straight to disk in
+                # chunks - response.read() would pull the whole thing
+                # into memory first, which is fine for a screenshot but
+                # not for a big video or design file attached to a page.
+                shutil.copyfileobj(response, f)
 
     request_with_retry(do_request)
 
@@ -123,6 +129,24 @@ def sanitise_filename(name):
     for ch in invalid_chars:
         name = name.replace(ch, "_")
     return name.strip()
+
+# A real attachment name can be long ("Q3 2024 Regional Sales Review -
+# Final (reviewed by finance).xlsx"), and this project's own folder depth
+# (confluence_export/pages/<id>_<title>/images/<filename>) adds a fair
+# bit on top of that. Windows' classic 260-character path limit is easy
+# to hit on an older setup once you add all that up, so keep the saved
+# filename itself well short of being the problem.
+MAX_ATTACHMENT_FILENAME_LENGTH = 100
+
+def truncate_filename(name, max_length=MAX_ATTACHMENT_FILENAME_LENGTH):
+    # Keeps the file extension (.xlsx, .png, ...) intact and trims the
+    # rest, so a very long name gets shorter without losing the bit that
+    # says what kind of file it actually is.
+    if len(name) <= max_length:
+        return name
+    root, ext = os.path.splitext(name)
+    root = root[:max_length - len(ext)]
+    return root + ext
 
 def make_unique_filename(name, used_names):
     """Appends a numeric suffix if this name was already used on the same page,
@@ -153,7 +177,7 @@ def get_all_pages_in_space():
                 "type": "page",
                 "start": start,
                 "limit": PAGE_SIZE,
-                "expand": "body.storage,version,ancestors",
+                "expand": "body.storage,version,ancestors,metadata.labels",
             },
         )
 
@@ -171,7 +195,25 @@ def get_all_pages_in_space():
 
 
 def get_single_page(page_id):
-    return api_get(f"/rest/api/content/{page_id}", {"expand": "body.storage,version,ancestors"})
+    return api_get(f"/rest/api/content/{page_id}", {"expand": "body.storage,version,ancestors,metadata.labels"})
+
+
+# @mentions in the storage HTML reference a user by an opaque userkey (or
+# occasionally a username on older content) with no display name anywhere
+# in the page itself - Confluence resolves that live, client-side. Regexes
+# over the raw HTML, not real XML parsing, since this is the only thing in
+# the extractor that needs to look inside page content at all.
+USERKEY_PATTERN = re.compile(r'<ri:user\b[^>]*\bri:userkey="([^"]+)"')
+USERNAME_PATTERN = re.compile(r'<ri:user\b[^>]*\bri:username="([^"]+)"')
+
+
+def resolve_user_display_name(user_key=None, username=None):
+    params = {"key": user_key} if user_key else {"username": username}
+    try:
+        data = api_get("/rest/api/user", params)
+        return data.get("displayName")
+    except Exception:
+        return None
 
 
 def get_attachments_for_page(page_id):
@@ -209,6 +251,8 @@ def main():
 
     manifest = []
     failures = []
+    mentioned_user_keys = set()
+    mentioned_usernames = set()
 
     for index, page in enumerate(pages, start=1):
         page_id = page["id"]
@@ -218,6 +262,9 @@ def main():
 
         try:
             html_body = page.get("body", {}).get("storage", {}).get("value", "")
+
+            mentioned_user_keys.update(USERKEY_PATTERN.findall(html_body))
+            mentioned_usernames.update(USERNAME_PATTERN.findall(html_body))
 
             page_folder = os.path.join(pages_dir, f"{page_id}_{safe_title[:50]}")
             os.makedirs(page_folder, exist_ok=True)
@@ -242,7 +289,7 @@ def main():
                     try:
                         att_title = attachment["title"]
                         download_link = attachment["_links"]["download"]
-                        safe_att_name = make_unique_filename(sanitise_filename(att_title), used_attachment_names)
+                        safe_att_name = make_unique_filename(truncate_filename(sanitise_filename(att_title)), used_attachment_names)
                         dest_path = os.path.join(images_folder, safe_att_name)
 
                         download_binary(download_link, dest_path)
@@ -267,6 +314,8 @@ def main():
             ancestors = page.get("ancestors", [])
             parent = ancestors[-1] if ancestors else None
 
+            labels = [label["name"] for label in page.get("metadata", {}).get("labels", {}).get("results", [])]
+
             manifest.append({
                 "id": page_id,
                 "title": title,
@@ -275,6 +324,7 @@ def main():
                 "attachments": attachment_records,
                 "parent_id": parent["id"] if parent else None,
                 "parent_title": parent["title"] if parent else None,
+                "labels": labels,
                 "version": page.get("version", {}).get("number"),
             })
 
@@ -283,6 +333,28 @@ def main():
             failures.append({"id": page_id, "title": title, "error": str(e)})
 
         time.sleep(REQUEST_DELAY_SECONDS)
+
+    # @mentions only give us an opaque userkey/username, so resolve each
+    # one (once) to the name that's actually worth showing. Best-effort:
+    # a lookup failing (e.g. a deleted user) just leaves that one out,
+    # the converter falls back to showing the raw identifier instead.
+    user_display_names = {}
+    if mentioned_user_keys or mentioned_usernames:
+        print(f"\nResolving {len(mentioned_user_keys) + len(mentioned_usernames)} mentioned user(s)...")
+        for user_key in mentioned_user_keys:
+            display_name = resolve_user_display_name(user_key=user_key)
+            if display_name:
+                user_display_names[user_key] = display_name
+            time.sleep(REQUEST_DELAY_SECONDS)
+        for username in mentioned_usernames:
+            display_name = resolve_user_display_name(username=username)
+            if display_name:
+                user_display_names[username] = display_name
+            time.sleep(REQUEST_DELAY_SECONDS)
+
+        user_display_names_path = os.path.join(OUTPUT_DIR, "user_display_names.json")
+        with open(user_display_names_path, "w", encoding="utf-8") as f:
+            json.dump(user_display_names, f, indent=2, ensure_ascii=False)
 
     # Save a manifest so the Markdown conversion step knows what's here
     manifest_path = os.path.join(OUTPUT_DIR, "manifest.json")

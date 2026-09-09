@@ -1,6 +1,6 @@
 # How the Confluence Migration Pipeline Works
 
-This is the short version of what the scripts in this repo actually do, start to finish. Five stages, each one hands off to the next.
+The picture of how the scripts in this repo fit together, start to finish. For what each step actually does, day-to-day usage, and troubleshooting, see [README.md](README.md) - that's the source of truth; this page just shows the shape of it, and links into README for the detail on each step rather than repeating it, so there's only one place to keep up to date.
 
 ```mermaid
 flowchart TD
@@ -23,44 +23,39 @@ flowchart TD
     G --> J[Length/naming check<br/>Azure: 235 chars]
     H --> K[Length/naming check<br/>SharePoint: 400 chars]
 
-    J --> L[Manual upload:<br/>git push into Azure DevOps Wiki repo]
-    K --> M[Manual upload:<br/>drag into SharePoint library]
+    J --> L[git push into Azure DevOps Wiki repo]
 
-    style L stroke-dasharray: 5 5
+    H --> N[confluence_sharepoint_paste.py/.ps1<br/>converts HTML to paste-ready HTML]
+    N --> M[Manual: paste into a new SharePoint page]
+
+    C --> O[confluence_table_to_csv.py/.ps1<br/>one table off one page -> CSV]
+    O --> P[(confluence_table_export/)]
+    P --> Q[Manual: SharePoint "Create list from CSV/Excel"]
+
     style M stroke-dasharray: 5 5
+    style Q stroke-dasharray: 5 5
 ```
 
-*(Dashed boxes at the end are the one piece not built yet, still manual.)*
+*(Dashed boxes are the manual steps left - see [Getting pages into SharePoint](README.md#getting-pages-into-sharepoint) and [Pages that are really just a table](README.md#pages-that-are-really-just-a-table) in the README for why, and what a real fix would need.)*
 
-## Stage by stage
+## Stage by stage - see README for the detail
 
-### 1. Confirm access works
-`confluence_auth_test.py` or `confluence_auth_test.ps1`, run one of them first. Logs in with your normal Confluence username and password (asked for at runtime, never stored in the file), fetches one page as a test. If it works, you're clear to move on. If it doesn't, this is where SSL certificate issues or permission problems show up, better to find that out on one page than 200 pages into a real run.
+1. **Confirm access works** - [How the auth test works](README.md#how-the-auth-test-works)
+2. **Already got a `confluence_export` folder from before, with garbled characters in it (`Â`, `â€™`)?** Run `repair_garbled_text` on it now - see that entry in [What's in here](README.md#whats-in-here). First time ever running this? Skip straight to step 3, nothing to repair yet.
+3. **Pull everything down** - [Pulling everything down](README.md#pulling-everything-down)
+4. **Classify pages, then convert to Markdown** - [Turning it into Markdown](README.md#turning-it-into-markdown)
+5. **Get pages into SharePoint** - [Getting pages into SharePoint](README.md#getting-pages-into-sharepoint)
+6. **A page that's really just a table?** - [Pages that are really just a table](README.md#pages-that-are-really-just-a-table) - better off as a SharePoint List
 
-### 2. Pull everything down
-`confluence_extractor.py` or `.ps1`. Walks every page in the space, saves the raw HTML content and downloads every image, writes it all into `confluence_export/`, one folder per page, plus a `manifest.json` that lists what's there. If a page fails partway through, it's logged and skipped rather than stopping the whole run.
-
-### 3. Classify each page
-The first time `confluence_html_to_markdown.py` or `.ps1` runs, it can't yet convert anything, because it doesn't know which pages are technical (Azure DevOps Wiki) versus everything else (SharePoint). So instead, it generates `page_destinations.csv`, one row per page, and stops. This gets filled in by hand, `azure` or `sharepoint` against each title, since there's no reliable way to guess that from content alone.
-
-### 4. Convert to Markdown
-Run the same script again once the CSV's filled in. Each page's HTML gets converted to real Markdown, headings, tables, links, images, code blocks, the lot, and routed into `confluence_markdown_export/azure/`, `.../sharepoint/`, or `.../unsorted/` (anything left unclassified). Images are copied alongside each page so the output folder is self-contained.
-
-### 5. Check it'll actually upload
-Still part of the same script run. For whichever destinations have pages, it checks every file's path length against that platform's real limit, Azure's stricter 235 characters (and it turns spaces into hyphens), SharePoint's more generous 400. Anything too long gets flagged, with the option to auto-shorten so nothing fails on upload later.
-
-### 6. Push it to the destination — not built yet
-This is the one gap. Getting the finished `.md` files into Azure DevOps Wiki (which is git-backed, so this would mean cloning the wiki's repo and pushing) or into a SharePoint document library (a different process entirely, likely the Graph API or PnP PowerShell) hasn't been built. Right now this step is manual.
+For the full walkthrough with actual commands in order, see [Getting started - which script, in what order](README.md#getting-started---which-script-in-what-order) in the README.
 
 ## Where things actually stand
 
-- [x] Access confirmed working
-- [x] Full extraction built
-- [x] Markdown conversion + destination classification built
-- [ ] Automated upload to Azure DevOps Wiki / SharePoint
+See [Where things stand](README.md#where-things-stand) in the README - kept in one place so this page can't drift out of sync with it.
 
 ## A couple of things worth remembering
 
 - **Nothing here needs admin access.** Every step uses the same read permission you already have browsing Confluence normally.
 - **No credentials are ever stored.** Every script asks for your username and password at runtime and never writes them anywhere.
-- **The raw export is never touched by later steps.** `confluence_export/` stays untouched even if you re-run the Markdown conversion, so nothing's ever lost by re-running a later stage.
+- **The raw export is never touched by later steps.** `confluence_export/` stays untouched even if you re-run later stages, so nothing's ever lost by re-running one.
+- **Small test runs are safe.** The `.ps1` scripts are specifically hardened against a PowerShell quirk where a result set with exactly one item (one page, one attachment, one page in a bucket) can otherwise get silently misread as "nothing" - so extracting or converting just a page or two to try the pipeline out works exactly like a full run would.

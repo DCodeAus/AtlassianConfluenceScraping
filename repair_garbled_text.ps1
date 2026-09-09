@@ -22,6 +22,8 @@ on genuinely corrupted text - see Repair-Text below). Each file it does
 change gets a .bak backup alongside it first.
 #>
 
+# Which folders to scan. Defaults to both export folders if you don't
+# specify your own - e.g. .\repair_garbled_text.ps1 -Roots some_other_folder
 param(
     [string[]]$Roots = @("confluence_export", "confluence_markdown_export")
 )
@@ -31,6 +33,9 @@ param(
 # correct text (real accents, dashes, quotes) is told apart from garbled
 # text and left alone.
 try {
+    # The encoding the bug actually used - loaded once up front, with
+    # strict error handling so any character it can't cleanly convert
+    # throws an error rather than silently getting mangled.
     $windows1252 = [System.Text.Encoding]::GetEncoding(
         1252,
         [System.Text.EncoderFallback]::ExceptionFallback,
@@ -40,6 +45,7 @@ catch {
     Write-Error "Couldn't load the Windows-1252 code page: $($_.Exception.Message)"
     exit 1
 }
+# The correct encoding, also with strict error handling for the same reason.
 $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
 
 function Repair-Text {
@@ -59,19 +65,32 @@ function Repair-Text {
     $current = $Text
     $passes = 0
 
+    # Keep trying to "un-garble" the text, up to $MaxPasses times.
     for ($i = 0; $i -lt $MaxPasses; $i++) {
         try {
+            # Re-encode the (possibly garbled) text as Windows-1252 bytes,
+            # then read those same bytes back as UTF-8 - if the text really
+            # was garbled this way, this recovers the original characters.
             $bytes = $windows1252.GetBytes($current)
             $candidate = $strictUtf8.GetString($bytes)
         }
         catch {
+            # This text contains a character Windows-1252 can't represent
+            # at all - a strong sign it was never actually garbled in the
+            # first place. Stop here and keep whatever we had before this
+            # attempt.
             break
         }
 
         if ($candidate.Length -ge $current.Length) {
+            # A real repair pass always makes the text shorter (see the
+            # explanation above) - if it didn't get shorter, this pass
+            # didn't actually fix anything, so stop.
             break
         }
 
+        # Genuine improvement - keep it, and see if another pass helps
+        # further (content that got garbled twice needs two passes).
         $current = $candidate
         $passes++
     }
@@ -79,6 +98,8 @@ function Repair-Text {
     return @{ Text = $current; Passes = $passes }
 }
 
+# Build the full list of .html and .md files to check, across every
+# folder given in $Roots.
 $files = @()
 foreach ($root in $Roots) {
     if (-not (Test-Path $root)) {
@@ -94,8 +115,12 @@ if ($files.Count -eq 0) {
 }
 
 $fixedCount = 0
+# Any file that can't even be read as valid UTF-8 gets noted here rather
+# than stopping the whole run.
 $unreadable = @()
 
+# Check every file, one at a time (sorted just so the output prints in a
+# predictable, easy-to-follow order).
 foreach ($file in ($files | Sort-Object FullName)) {
     try {
         $original = [System.IO.File]::ReadAllText($file.FullName, $strictUtf8)
@@ -107,9 +132,13 @@ foreach ($file in ($files | Sort-Object FullName)) {
 
     $result = Repair-Text -Text $original
     if ($result.Passes -eq 0) {
+        # Nothing needed fixing in this file - leave it alone entirely,
+        # don't even touch its last-modified time.
         continue
     }
 
+    # Back up the original before overwriting it, so it's always
+    # possible to get back to exactly what was there before.
     $backupPath = "$($file.FullName).bak"
     if (-not (Test-Path $backupPath)) {
         Copy-Item -Path $file.FullName -Destination $backupPath
