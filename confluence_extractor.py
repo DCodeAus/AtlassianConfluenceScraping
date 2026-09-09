@@ -16,6 +16,7 @@ import getpass
 import json
 import os
 import re
+import shutil
 import ssl
 import time
 import urllib.error
@@ -113,7 +114,11 @@ def download_binary(url_path, dest_path):
 
         with urllib.request.urlopen(request, context=SSL_CONTEXT) as response:
             with open(dest_path, "wb") as f:
-                f.write(response.read())
+                # copyfileobj streams the download straight to disk in
+                # chunks - response.read() would pull the whole thing
+                # into memory first, which is fine for a screenshot but
+                # not for a big video or design file attached to a page.
+                shutil.copyfileobj(response, f)
 
     request_with_retry(do_request)
 
@@ -124,6 +129,24 @@ def sanitise_filename(name):
     for ch in invalid_chars:
         name = name.replace(ch, "_")
     return name.strip()
+
+# A real attachment name can be long ("Q3 2024 Regional Sales Review -
+# Final (reviewed by finance).xlsx"), and this project's own folder depth
+# (confluence_export/pages/<id>_<title>/images/<filename>) adds a fair
+# bit on top of that. Windows' classic 260-character path limit is easy
+# to hit on an older setup once you add all that up, so keep the saved
+# filename itself well short of being the problem.
+MAX_ATTACHMENT_FILENAME_LENGTH = 100
+
+def truncate_filename(name, max_length=MAX_ATTACHMENT_FILENAME_LENGTH):
+    # Keeps the file extension (.xlsx, .png, ...) intact and trims the
+    # rest, so a very long name gets shorter without losing the bit that
+    # says what kind of file it actually is.
+    if len(name) <= max_length:
+        return name
+    root, ext = os.path.splitext(name)
+    root = root[:max_length - len(ext)]
+    return root + ext
 
 def make_unique_filename(name, used_names):
     """Appends a numeric suffix if this name was already used on the same page,
@@ -266,7 +289,7 @@ def main():
                     try:
                         att_title = attachment["title"]
                         download_link = attachment["_links"]["download"]
-                        safe_att_name = make_unique_filename(sanitise_filename(att_title), used_attachment_names)
+                        safe_att_name = make_unique_filename(truncate_filename(sanitise_filename(att_title)), used_attachment_names)
                         dest_path = os.path.join(images_folder, safe_att_name)
 
                         download_binary(download_link, dest_path)

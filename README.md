@@ -4,6 +4,40 @@ Pulls documentation out of a self-hosted Confluence instance and turns it into M
 
 The pipeline goes: test you can actually connect → pull every page down → classify each page as Azure or SharePoint → convert it all to Markdown, routed to the right spot → check it'll actually upload without falling over on file name limits.
 
+Want the picture before the detail? [HowThisWorks.md](HowThisWorks.md) has the whole pipeline as one diagram.
+
+## Quick start (PowerShell only)
+
+Just want the commands, in order, no explanation? Here they are - run each from inside this folder in PowerShell. See "Getting started" further down for what each one actually does, and "When something goes wrong" if anything doesn't behave like this says.
+
+```powershell
+# 1. Open confluence_auth_test.ps1, fill in $BaseUrl and $SpaceKey near the
+#    top, save, then check you can actually connect:
+.\confluence_auth_test.ps1
+
+# 2. Only if you've got a confluence_export folder from BEFORE today, with
+#    garbled characters in it (Â, â€™) - skip this if this is your first run:
+.\repair_garbled_text.ps1
+
+# 3. Fill in the same $BaseUrl/$SpaceKey in confluence_extractor.ps1, then
+#    pull every page down:
+.\confluence_extractor.ps1
+
+# 4. Convert to Markdown. First run just creates page_destinations.csv -
+#    open it in Excel, mark each row "azure" or "sharepoint", save, then
+#    run this again to actually convert:
+.\confluence_html_to_markdown.ps1
+
+# 5. Get each page where it's going:
+#    - "azure" pages: git push confluence_markdown_export\azure\ into your
+#      wiki repo - see "Getting pages into Azure DevOps Wiki" below if
+#      you've never used git.
+#    - "sharepoint" pages, turn them into paste-ready HTML:
+.\confluence_sharepoint_paste.ps1
+#    - a page that's really just a table (an on-call roster, say):
+.\confluence_table_to_csv.ps1 "Page Title"
+```
+
 ## Credentials, don't worry about them
 
 None of these scripts have a username or password sitting in the file. Run any of them and they'll just ask:
@@ -102,6 +136,28 @@ All five need a re-extraction to pick up on content pulled before this landed - 
 
 Pages still sitting in `unsorted` don't go through this check at all, sort them into the CSV and re-run first.
 
+## Getting pages into Azure DevOps Wiki
+
+An Azure DevOps Wiki is a git repository behind the scenes - "pushing" a folder into it just means copying your files into a local copy of that repo and telling git to send them up. If you've never used git before, here's the actual steps, not just "git push it":
+
+1. **Get Git itself, if it's not already on your machine.** Download it from [git-scm.com](https://git-scm.com/downloads) and install it - default options are fine, no admin rights needed for the per-user install.
+2. **Get the wiki's repo address.** In Azure DevOps, open your project's Wiki, click **Clone Wiki** (or **Clone repository** if you're pointed at the underlying repo directly), and copy the URL it gives you (ends in `.wiki` or `.git`).
+3. **Get a local copy of it.** Open a terminal, go to a folder you want to work in, and run:
+   ```
+   git clone <the URL you copied>
+   ```
+   This creates a new folder containing everything currently in the wiki.
+4. **Copy your converted pages in.** Copy everything from inside `confluence_markdown_export/azure/` into that cloned folder (merging with whatever's already there).
+5. **Send it up.** Back in the terminal, inside that cloned folder, run:
+   ```
+   git add .
+   git commit -m "Import pages from Confluence"
+   git push
+   ```
+   That's it - refresh the Wiki in Azure DevOps and your pages are there.
+
+If typing commands isn't your thing, [GitHub Desktop](https://desktop.github.com/) (works with Azure DevOps too, not just GitHub) gives you the same clone/commit/push steps as buttons in a normal-looking app instead - point it at the same repo URL from step 2.
+
 ## Getting pages into SharePoint
 
 Azure DevOps Wiki is a git repo under the hood, so getting the `azure/` output live is just a `git push`. SharePoint has no equivalent, and properly automating it (calling the Microsoft Graph API to create real SharePoint pages) needs an Entra ID app registration, which needs either admin rights or an admin's one-time consent to grant it access to your site. If you don't have that, run:
@@ -126,6 +182,32 @@ The first line of each page is a reminder of what to set as the SharePoint page'
 **Related pages block:** SharePoint has no direct equivalent of Confluence's always-visible page tree sidebar, so each page ends with its own "Related pages" section instead, listing its parent and direct sub-pages by title (same `[UNRESOLVED LINK: "..."]` treatment, since none of these have real SharePoint URLs until they're actually migrated). This needs the extractor to have pulled each page's Confluence ancestry, which only started being recorded once this feature landed - if your `confluence_export` predates it, re-run `confluence_extractor.py`/`.ps1` to pick it up, otherwise this section just won't appear.
 
 If you *do* have (or can get) the Entra ID access this needs, the Graph API's Pages endpoint (`POST /sites/{siteId}/pages`) is the real automation path, at that point it's worth building a proper upload script instead of this copy-paste workflow.
+
+### If you want to automate the SharePoint side further
+
+No Entra ID access, but want more than copy-paste? **Power Automate** is worth trying, since its own SharePoint connector runs under your normal signed-in permissions rather than a separate app registration - it sometimes gets through the exact gate that blocks Graph API automation. Nothing below has been tried against a real tenant yet, so treat this as "the next thing to try," not a finished recipe.
+
+**Step 1 - find out whether this is even possible for you (safe, read-only):**
+
+1. Go to `make.powerautomate.com`, sign in with your normal work account.
+2. **Create** → **Instant cloud flow** → trigger it with **Manually trigger a flow**.
+3. **New step** → search **SharePoint** → pick **Send an HTTP request to SharePoint**.
+4. It'll ask you to sign in and create a connection - this is the actual test. If it connects without hitting an admin-approval screen, you're through the gate that blocked the Entra ID route.
+5. Confirm it actually works with something harmless: **Site Address** = your site's URL, **Method** = `GET`, **Uri** = `_api/web/title`. Run it - if it hands back your site's real title instead of a permission error, the connector works under your identity.
+
+**Step 2 - if that works, creating an actual page:**
+
+Power Automate's SharePoint connector has no built-in "create a modern page" action, so this still goes through the same **Send an HTTP request to SharePoint** action, calling SharePoint's own REST API directly, in two parts:
+
+1. Create the underlying page file:
+   ```
+   POST /_api/web/getfolderbyserverrelativeurl('/SitePages')/files/addusingpath(decodedurl='@a1',overwrite=true)?@a1='YourPageName.aspx'
+   ```
+2. Set its title and content by updating the matching item in the site's "Site Pages" list - the fields involved are `Title`, `PageLayoutType`, and `CanvasContent1` (SharePoint's own JSON format for a page's web parts).
+
+Fair warning on that second part: `CanvasContent1`'s exact shape isn't something to copy-paste blindly, it's genuinely finicky and tenant/version-sensitive - expect to test and adjust against a real page before it behaves. Try it on one throwaway page in a site you don't mind experimenting in first.
+
+If it does pan out, the real next piece of work is a script that turns the HTML `confluence_sharepoint_paste` already generates into that `CanvasContent1` format automatically - a bigger job than anything built so far, worth coming back to once the manual test above actually works, not before.
 
 ## Pages that are really just a table
 
@@ -181,7 +263,7 @@ New to this? Here's the order to actually run things in, start to finish. Everyt
    The first time, this just generates `page_destinations.csv` and stops - open that in Excel, mark each row `azure` or `sharepoint`, save, then run the script again to actually convert everything. See "Turning it into Markdown" above for the full detail.
 
 6. **Get each page into its actual destination:**
-   - Classified `azure` → `git push` the `confluence_markdown_export/azure/` folder into your Azure DevOps Wiki repo. Done.
+   - Classified `azure` → `git push` the `confluence_markdown_export/azure/` folder into your Azure DevOps Wiki repo. See "Getting pages into Azure DevOps Wiki" above if you've never used git before.
    - Classified `sharepoint` → run `.\confluence_sharepoint_paste.ps1`, then copy-paste each resulting page into a new SharePoint page by hand. See "Getting pages into SharePoint" above.
    - A page that's really just a table (an on-call roster, say)? Run `.\confluence_table_to_csv.ps1 "Page Title"` instead, and create it as a SharePoint List from the CSV. See "Pages that are really just a table" above.
 
@@ -204,7 +286,7 @@ First time running Python, or having trouble with VS Code's terminal? `runningPy
 | Weird garbled characters in the Markdown, e.g. `Â` where a space or accent should be, or `â€™` instead of an apostrophe | An old bug in `confluence_extractor.ps1`: PowerShell decoded Confluence's UTF-8 response as Windows-1252, mangling anything non-ASCII (accents, curly quotes, dashes). Already fixed in the extractor, so new extractions come out clean. For content you already pulled before the fix, run `repair_garbled_text.ps1` (or `.py`) once against your `confluence_export`/`confluence_markdown_export` folders, it undoes the mis-decode in place and backs up each file it touches as `.bak`. |
 | A converted table looks broken, extra `\|` rows or content spilling out of the table | An old bug: a table cell with more than one paragraph, or a line break in it, produced a real newline in the Markdown, which splits a table row across lines. Already fixed, multi-line cell content now becomes `<br>` instead. No re-extraction needed, just re-run the Markdown converter over your existing `confluence_export`. |
 | An image shows up broken after uploading, even though `content.md` references it | An old bug: the Markdown linked to the image by its original Confluence filename, which can differ from what's actually on disk (special characters get replaced with `_` when saved, and two attachments with the same name get a `_2` suffix). Already fixed, the extractor now records both names so the converter can point at the right file. Only fixes new extractions though, since the old filename mapping wasn't recorded before, re-run the extractor (not just the converter) on affected pages to pick it up. |
-| `confluence_sharepoint_paste.ps1` says "nothing to do" even though you classified a page as `sharepoint`, or a page's one-and-only attachment silently never gets downloaded | An old bug specific to the `.ps1` scripts: PowerShell can silently misread a result set as empty/scalar when it has exactly one item (one page, one attachment, one page landing in a bucket) rather than treating it as a one-item list. Already fixed throughout, extracting or converting just one or two pages to try things out now behaves exactly like a full run. |
+| `confluence_sharepoint_paste.ps1` says "nothing to do" even though you classified a page as `sharepoint`, a page's one-and-only attachment silently never gets downloaded, or `manifest.json` itself doesn't look like a proper list (`{...}` instead of `[{...}]`) after extracting just one page | An old bug specific to the `.ps1` scripts: PowerShell can silently misread a result set as empty/scalar when it has exactly one item (one page, one attachment, one page landing in a bucket) rather than treating it as a one-item list - the `manifest.json` case is the nastiest version, since a malformed manifest breaks every downstream script, not just one symptom. Already fixed throughout, extracting or converting just one or two pages to try things out now behaves exactly like a full run. |
 | A Python converter script crashes with a `JSONDecodeError` reading `manifest.json`, but only when it was extracted with `confluence_extractor.ps1` | An old cross-language bug: on Windows PowerShell 5.1, `Set-Content -Encoding UTF8` adds an invisible marker (a BOM) to the front of the file, which Python's `json` module refuses to read. Already fixed on both sides - the PowerShell extractor no longer adds that marker, and the Python scripts tolerate it either way - so extracting with one and converting with the other now works regardless of which combination you use. |
 | Non-ASCII page titles (accents, curly quotes) show up garbled in Excel when you open `page_destinations.csv` | The same class of bug as the "weird garbled characters" row above, just via a different path: Excel needs that same invisible BOM marker to correctly read a UTF-8 CSV, and the Python script writing this file wasn't including it. Already fixed - regenerate the CSV (delete it and re-run the Markdown converter) to get a clean copy. |
 
@@ -214,7 +296,7 @@ First time running Python, or having trouble with VS Code's terminal? `runningPy
 - [x] Pulling every page down, content and images
 - [x] Converting it all to Markdown, split by destination via the classification CSV, with the Azure/SharePoint length check
 - [x] Azure DevOps Wiki: just `git push` the `azure/` output, it's a git repo
-- [ ] SharePoint: no admin access to automate via Graph API yet, so `confluence_sharepoint_paste` generates paste-ready HTML but page creation itself is still a manual copy-paste per page
+- [ ] SharePoint: no admin access to automate via Graph API yet, so `confluence_sharepoint_paste` generates paste-ready HTML but page creation itself is still a manual copy-paste per page - Power Automate is the next thing to try, see "If you want to automate the SharePoint side further" above, but that's untested against a real tenant so far
 
 ## One more thing
 

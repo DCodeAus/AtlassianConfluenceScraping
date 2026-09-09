@@ -177,6 +177,29 @@ function Get-SanitisedFilename {
     return $result.Trim()
 }
 
+# A real attachment name can be long ("Q3 2024 Regional Sales Review -
+# Final (reviewed by finance).xlsx"), and this project's own folder depth
+# (confluence_export\pages\<id>_<title>\images\<filename>) adds a fair
+# bit on top of that. Windows' classic 260-character path limit is easy
+# to hit on an older setup once you add all that up, so keep the saved
+# filename itself well short of being the problem.
+$MaxAttachmentFilenameLength = 100
+
+function Get-TruncatedFilename {
+    # Keeps the file extension (.xlsx, .png, ...) intact and trims the
+    # rest, so a very long name gets shorter without losing the bit that
+    # says what kind of file it actually is.
+    param([string]$Name, [int]$MaxLength = $MaxAttachmentFilenameLength)
+
+    if ($Name.Length -le $MaxLength) {
+        return $Name
+    }
+    $extension = [System.IO.Path]::GetExtension($Name)
+    $root = [System.IO.Path]::GetFileNameWithoutExtension($Name)
+    $root = $root.Substring(0, $MaxLength - $extension.Length)
+    return "$root$extension"
+}
+
 function Get-UniqueFilename {
     # Appends a numeric suffix if this name was already used on the same page,
     # so two attachments that sanitise to the same name don't overwrite each other.
@@ -457,7 +480,7 @@ foreach ($page in $pages) {
                     $downloadLink = $attachment._links.download
                     # Work out a safe, unique file name to save this
                     # attachment under on disk.
-                    $safeAttName = Get-UniqueFilename (Get-SanitisedFilename $attTitle) $usedAttachmentNames
+                    $safeAttName = Get-UniqueFilename (Get-TruncatedFilename (Get-SanitisedFilename $attTitle)) $usedAttachmentNames
                     $destPath = Join-Path $imagesFolder $safeAttName
 
                     Save-Attachment -DownloadPath $downloadLink -DestPath $destPath
