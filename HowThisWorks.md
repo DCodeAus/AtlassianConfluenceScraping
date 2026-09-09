@@ -30,7 +30,7 @@ flowchart TD
 
     C --> O[confluence_table_to_csv.py/.ps1<br/>one table off one page -> CSV]
     O --> P[(confluence_table_export/)]
-    P --> Q[Manual: SharePoint "Create list from CSV/Excel"]
+    P --> Q[Manual: SharePoint 'Create list from CSV/Excel']
 
     style M stroke-dasharray: 5 5
     style Q stroke-dasharray: 5 5
