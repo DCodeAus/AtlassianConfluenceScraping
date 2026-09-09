@@ -70,6 +70,7 @@ If an older version of a script ever did have real credentials typed into it and
 | `repair_garbled_text.ps1` | Fixes up `content.html`/`content.md` files already extracted with the old `.ps1` encoding bug (garbled accents/quotes/dashes, see Troubleshooting below). Only needed once, for content pulled before that fix landed. |
 | `repair_garbled_text.py` | Same repair, Python standard library only. |
 | `runningPythonScriptsInVSCode.md` | If Python in VS Code is giving you grief (PATH errors, nothing happening when you hit run), this walks through it. |
+| `settingUpPowerAutomate.md` | First-time walkthrough for trying Power Automate as a way past the Entra ID wall blocking real SharePoint page automation. See "If you want to automate the SharePoint side further" below. |
 
 A couple of older files (`confluence_no_ssl_auth_test.py`, `confluence_auth_test_no_imports.py`) were working drafts from while I was sorting out the SSL cert issue. Everything useful from them is now folded into `confluence_auth_test.py`, so they're just clutter at this point, safe to delete.
 
@@ -185,29 +186,9 @@ If you *do* have (or can get) the Entra ID access this needs, the Graph API's Pa
 
 ### If you want to automate the SharePoint side further
 
-No Entra ID access, but want more than copy-paste? **Power Automate** is worth trying, since its own SharePoint connector runs under your normal signed-in permissions rather than a separate app registration - it sometimes gets through the exact gate that blocks Graph API automation. Nothing below has been tried against a real tenant yet, so treat this as "the next thing to try," not a finished recipe.
+No Entra ID access, but want more than copy-paste? **Power Automate** is worth trying, since its own SharePoint connector runs under your normal signed-in permissions rather than a separate app registration - it sometimes gets through the exact gate that blocks Graph API automation. Nothing here has been tried against a real tenant yet, so treat it as "the next thing to try," not a finished recipe.
 
-**Step 1 - find out whether this is even possible for you (safe, read-only):**
-
-1. Go to `make.powerautomate.com`, sign in with your normal work account.
-2. **Create** → **Instant cloud flow** → trigger it with **Manually trigger a flow**.
-3. **New step** → search **SharePoint** → pick **Send an HTTP request to SharePoint**.
-4. It'll ask you to sign in and create a connection - this is the actual test. If it connects without hitting an admin-approval screen, you're through the gate that blocked the Entra ID route.
-5. Confirm it actually works with something harmless: **Site Address** = your site's URL, **Method** = `GET`, **Uri** = `_api/web/title`. Run it - if it hands back your site's real title instead of a permission error, the connector works under your identity.
-
-**Step 2 - if that works, creating an actual page:**
-
-Power Automate's SharePoint connector has no built-in "create a modern page" action, so this still goes through the same **Send an HTTP request to SharePoint** action, calling SharePoint's own REST API directly, in two parts:
-
-1. Create the underlying page file:
-   ```
-   POST /_api/web/getfolderbyserverrelativeurl('/SitePages')/files/addusingpath(decodedurl='@a1',overwrite=true)?@a1='YourPageName.aspx'
-   ```
-2. Set its title and content by updating the matching item in the site's "Site Pages" list - the fields involved are `Title`, `PageLayoutType`, and `CanvasContent1` (SharePoint's own JSON format for a page's web parts).
-
-Fair warning on that second part: `CanvasContent1`'s exact shape isn't something to copy-paste blindly, it's genuinely finicky and tenant/version-sensitive - expect to test and adjust against a real page before it behaves. Try it on one throwaway page in a site you don't mind experimenting in first.
-
-If it does pan out, the real next piece of work is a script that turns the HTML `confluence_sharepoint_paste` already generates into that `CanvasContent1` format automatically - a bigger job than anything built so far, worth coming back to once the manual test above actually works, not before.
+[settingUpPowerAutomate.md](settingUpPowerAutomate.md) has the full first-time walkthrough: creating a flow, the actual connectivity test, and (if that works) the two-part approach to creating a real page, plus troubleshooting for the likely snags.
 
 ## Pages that are really just a table
 
