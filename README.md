@@ -29,6 +29,10 @@ If an older version of a script ever did have real credentials typed into it and
 | `confluence_extractor.ps1` | Same extractor, PowerShell version. Use this one if Python keeps tripping over the org's certificate. |
 | `confluence_html_to_markdown.ps1` | Takes everything the extractor pulled and turns it into proper Markdown, images and all. Routes each page to Azure or SharePoint based on how you've classified it in a CSV, with a built-in check for each platform's file name limits. |
 | `confluence_html_to_markdown.py` | Same conversion and routing, Python standard library only. Use this one if you don't have PowerShell (e.g. extracted on Mac/Linux). |
+| `confluence_sharepoint_paste.ps1` | Turns each page classified "sharepoint" into a standalone .html file ready to copy-paste into a new SharePoint page. See "Getting pages into SharePoint" below. |
+| `confluence_sharepoint_paste.py` | Same thing, Python standard library only. |
+| `repair_garbled_text.ps1` | Fixes up `content.html`/`content.md` files already extracted with the old `.ps1` encoding bug (garbled accents/quotes/dashes, see Troubleshooting below). Only needed once, for content pulled before that fix landed. |
+| `repair_garbled_text.py` | Same repair, Python standard library only. |
 | `runningPythonScriptsInVSCode.md` | If Python in VS Code is giving you grief (PATH errors, nothing happening when you hit run), this walks through it. |
 
 A couple of older files (`confluence_no_ssl_auth_test.py`, `confluence_auth_test_no_imports.py`) were working drafts from while I was sorting out the SSL cert issue. Everything useful from them is now folded into `confluence_auth_test.py`, so they're just clutter at this point, safe to delete.
@@ -86,6 +90,31 @@ If it hits a Confluence macro it doesn't recognise (a page tree, a Jira embed, s
 
 Pages still sitting in `unsorted` don't go through this check at all, sort them into the CSV and re-run first.
 
+## Getting pages into SharePoint
+
+Azure DevOps Wiki is a git repo under the hood, so getting the `azure/` output live is just a `git push`. SharePoint has no equivalent, and properly automating it (calling the Microsoft Graph API to create real SharePoint pages) needs an Entra ID app registration, which needs either admin rights or an admin's one-time consent to grant it access to your site. If you don't have that, run:
+
+```
+.\confluence_sharepoint_paste.ps1
+```
+or
+```
+python confluence_sharepoint_paste.py
+```
+
+against your `sharepoint/`-classified pages once they're converted. This doesn't upload anything, it turns each page into a standalone `confluence_sharepoint_paste/.../content.html` you open in a browser, select all (Ctrl+A), copy (Ctrl+C), then paste straight into a new SharePoint page's text web part (`+ New Page` > `Blank`). Headings, bold, links, lists, and tables all come through as real formatting, not as something you have to retype.
+
+Two things it can't do automatically, so it flags them instead:
+
+- **Images** - a pasted `<img src="local/path">` has nothing to load once it's sitting in a browser's clipboard (there's no server behind a relative local file path), so each image becomes a visible `[INSERT IMAGE HERE: ...]` note telling you which file to drag in yourself, using SharePoint's own image tool, from the `images/` folder sitting next to that page's `content.html`.
+- **Internal links and unrecognised macros** - same visible-marker treatment as the Markdown export (`[UNRESOLVED LINK: "..."]`, `[UNRECOGNISED CONFLUENCE MACRO: ...]`), just as plain text instead of an HTML comment, since comments silently vanish when you copy-paste into a rich text editor and the whole point is that you notice these.
+
+The first line of each page is a reminder of what to set as the SharePoint page's title, meant to be deleted once you've used it, since the real title field lives in SharePoint's own page-creation dialog, not in the pasted body.
+
+**Related pages block:** SharePoint has no direct equivalent of Confluence's always-visible page tree sidebar, so each page ends with its own "Related pages" section instead, listing its parent and direct sub-pages by title (same `[UNRESOLVED LINK: "..."]` treatment, since none of these have real SharePoint URLs until they're actually migrated). This needs the extractor to have pulled each page's Confluence ancestry, which only started being recorded once this feature landed - if your `confluence_export` predates it, re-run `confluence_extractor.py`/`.ps1` to pick it up, otherwise this section just won't appear.
+
+If you *do* have (or can get) the Entra ID access this needs, the Graph API's Pages endpoint (`POST /sites/{siteId}/pages`) is the real automation path, at that point it's worth building a proper upload script instead of this copy-paste workflow.
+
 ## What you need installed
 
 - **Python scripts**: just Python 3. Nothing to `pip install`, everything's standard library.
@@ -115,13 +144,17 @@ First time running Python, or having trouble with VS Code's terminal? `runningPy
 | `403 Forbidden` | Login's fine, you just don't have read access to that particular space. |
 | `python is not recognised` | Python's not on PATH, or your terminal was open before Python got installed. See the VS Code guide. |
 | PowerShell won't run the script at all | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, run as yourself, no admin needed. |
+| Weird garbled characters in the Markdown, e.g. `Â` where a space or accent should be, or `â€™` instead of an apostrophe | An old bug in `confluence_extractor.ps1`: PowerShell decoded Confluence's UTF-8 response as Windows-1252, mangling anything non-ASCII (accents, curly quotes, dashes). Already fixed in the extractor, so new extractions come out clean. For content you already pulled before the fix, run `repair_garbled_text.ps1` (or `.py`) once against your `confluence_export`/`confluence_markdown_export` folders, it undoes the mis-decode in place and backs up each file it touches as `.bak`. |
+| A converted table looks broken, extra `\|` rows or content spilling out of the table | An old bug: a table cell with more than one paragraph, or a line break in it, produced a real newline in the Markdown, which splits a table row across lines. Already fixed, multi-line cell content now becomes `<br>` instead. No re-extraction needed, just re-run the Markdown converter over your existing `confluence_export`. |
+| An image shows up broken after uploading, even though `content.md` references it | An old bug: the Markdown linked to the image by its original Confluence filename, which can differ from what's actually on disk (special characters get replaced with `_` when saved, and two attachments with the same name get a `_2` suffix). Already fixed, the extractor now records both names so the converter can point at the right file. Only fixes new extractions though, since the old filename mapping wasn't recorded before, re-run the extractor (not just the converter) on affected pages to pick it up. |
 
 ## Where things stand
 
 - [x] Confirming access actually works
 - [x] Pulling every page down, content and images
 - [x] Converting it all to Markdown, split by destination via the classification CSV, with the Azure/SharePoint length check
-- [ ] Actually pushing the converted files into Azure DevOps Wiki and SharePoint (still manual for now, drag files in or `git push` for the Wiki side)
+- [x] Azure DevOps Wiki: just `git push` the `azure/` output, it's a git repo
+- [ ] SharePoint: no admin access to automate via Graph API yet, so `confluence_sharepoint_paste` generates paste-ready HTML but page creation itself is still a manual copy-paste per page
 
 ## One more thing
 

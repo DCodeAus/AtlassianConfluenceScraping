@@ -177,6 +177,30 @@ function ConvertTo-XmlSafeEntities {
     return $result
 }
 
+# Set once per page (see the main loop below) to that page's manifest
+# "attachments" entry, mapping the original Confluence filename to whatever
+# it actually got saved as - the "image" case above consults it to build a
+# working link.
+$script:currentAttachmentMap = @{}
+
+function Get-AttachmentMap {
+    param($attachments)
+
+    $map = @{}
+    foreach ($entry in $attachments) {
+        if ($entry.PSObject.Properties.Match("filename").Count -gt 0 -and $entry.PSObject.Properties.Match("saved_as").Count -gt 0) {
+            $map[$entry.filename] = $entry.saved_as
+        }
+        else {
+            # Manifest from before this mapping existed: the saved filename
+            # was assumed to match the original one-for-one, which is the
+            # best we can do without re-extracting.
+            $map[[string]$entry] = [string]$entry
+        }
+    }
+    return $map
+}
+
 function Convert-NodeToMarkdown {
     param(
         [System.Xml.Linq.XElement]$node,
@@ -265,7 +289,12 @@ function Convert-NodeToMarkdown {
                 $rowIndex = 0
                 foreach ($tableRow in $tableRows) {
                     $tableCells = $tableRow.Elements() | Where-Object { $_.Name.LocalName -in @("th", "td") }
-                    $cellTexts = $tableCells | ForEach-Object { (Convert-NodeToMarkdown $_).Trim() -replace '\|', '\|' }
+                    # A cell with multiple <p>s or a <br> produces embedded newlines,
+                    # which would otherwise split a pipe-table row across lines and
+                    # corrupt the table - collapse them to <br> instead.
+                    $cellTexts = $tableCells | ForEach-Object {
+                        ((Convert-NodeToMarkdown $_).Trim() -replace '\s*\n\s*', '<br>') -replace '\|', '\|'
+                    }
                     [void]$stringBuilder.Append("| " + ($cellTexts -join " | ") + " |`n")
 
                     if ($rowIndex -eq 0) {
@@ -285,12 +314,22 @@ function Convert-NodeToMarkdown {
                     $filenameAttribute = $attachmentRef.Attributes() | Where-Object { $_.Name.LocalName -eq "filename" } | Select-Object -First 1
                     if ($filenameAttribute) {
                         $filename = $filenameAttribute.Value
-                        [void]$stringBuilder.Append("`n![$filename](images/$filename)`n")
+                        # The page references the image by its original Confluence
+                        # filename, which may not be what actually got saved to disk
+                        # (sanitised characters, or a _2 suffix from a name
+                        # collision) - resolve it via the manifest's filename ->
+                        # saved_as map for this page.
+                        $savedName = if ($script:currentAttachmentMap.ContainsKey($filename)) { $script:currentAttachmentMap[$filename] } else { $filename }
+                        # Angle-bracket the path: a lot of real attachment names have
+                        # spaces (screenshots, "Diagram v2.png"), and a bare space in
+                        # an unbracketed markdown link destination isn't reliably
+                        # parsed by every renderer (some truncate at the first one).
+                        [void]$stringBuilder.Append("`n![$filename](<images/$savedName>)`n")
                     }
                 } elseif ($urlRef) {
                     $valueAttribute = $urlRef.Attributes() | Where-Object { $_.Name.LocalName -eq "value" } | Select-Object -First 1
                     if ($valueAttribute) {
-                        [void]$stringBuilder.Append("`n![image]($($valueAttribute.Value))`n")
+                        [void]$stringBuilder.Append("`n![image](<$($valueAttribute.Value)>)`n")
                     }
                 }
             }
@@ -381,6 +420,8 @@ foreach ($pageEntry in $manifest) {
 
         $rawHtml = Get-Content $htmlPath -Raw -Encoding UTF8
         $rawHtml = ConvertTo-XmlSafeEntities $rawHtml
+
+        $script:currentAttachmentMap = Get-AttachmentMap $pageEntry.attachments
 
         # Wrap in a root element with the Confluence namespaces declared,
         # so the XML parser understands ac: and ri: prefixed tags.

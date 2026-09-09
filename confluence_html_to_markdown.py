@@ -79,6 +79,25 @@ def get_attr(elem, local_attr_name):
     return None
 
 
+# Set once per page (see main()) to that page's manifest "attachments" entry,
+# mapping the original Confluence filename to whatever it actually got saved
+# as - the image tag handler below consults it to build a working link.
+CURRENT_ATTACHMENT_MAP = {}
+
+
+def build_attachment_map(attachments):
+    attachment_map = {}
+    for entry in attachments:
+        if isinstance(entry, dict):
+            attachment_map[entry["filename"]] = entry["saved_as"]
+        else:
+            # Manifest from before this mapping existed: the saved filename
+            # was assumed to match the original one-for-one, which is the
+            # best we can do without re-extracting.
+            attachment_map[entry] = entry
+    return attachment_map
+
+
 def convert_node_to_markdown(elem, list_depth=0):
     """Walks an element's children in document order (text + child elements),
     dispatching each child element to its Markdown equivalent."""
@@ -158,7 +177,13 @@ def convert_element_to_markdown(elem, list_depth):
         table_rows = [e for e in elem.iter() if local_name(e.tag) == "tr"]
         for row_index, table_row in enumerate(table_rows):
             table_cells = [c for c in table_row if local_name(c.tag) in ("th", "td")]
-            cell_texts = [convert_node_to_markdown(c).strip().replace("|", "\\|") for c in table_cells]
+            # A cell with multiple <p>s or a <br> produces embedded newlines,
+            # which would otherwise split a pipe-table row across lines and
+            # corrupt the table - collapse them to <br> instead.
+            cell_texts = [
+                re.sub(r"\s*\n\s*", "<br>", convert_node_to_markdown(c).strip()).replace("|", "\\|")
+                for c in table_cells
+            ]
             out += "| " + " | ".join(cell_texts) + " |\n"
             if row_index == 0:
                 out += "| " + " | ".join(["---"] * len(cell_texts)) + " |\n"
@@ -172,11 +197,20 @@ def convert_element_to_markdown(elem, list_depth):
         if attachment_ref is not None:
             filename = get_attr(attachment_ref, "filename")
             if filename:
-                return f"\n![{filename}](images/{filename})\n"
+                # The page references the image by its original Confluence
+                # filename, which may not be what actually got saved to disk
+                # (sanitised characters, or a _2 suffix from a name collision)
+                # - resolve it via the manifest's filename -> saved_as map.
+                saved_name = CURRENT_ATTACHMENT_MAP.get(filename, filename)
+                # Angle-bracket the path: a lot of real attachment names have
+                # spaces (screenshots, "Diagram v2.png"), and a bare space in
+                # an unbracketed markdown link destination isn't reliably
+                # parsed by every renderer (some truncate at the first one).
+                return f"\n![{filename}](<images/{saved_name}>)\n"
         elif url_ref is not None:
             value = get_attr(url_ref, "value")
             if value:
-                return f"\n![image]({value})\n"
+                return f"\n![image](<{value}>)\n"
         return ""
 
     if tag == "structured-macro":
@@ -450,6 +484,9 @@ def main():
                 raw_html = f.read()
 
             raw_html = escape_non_xml_entities(raw_html)
+
+            global CURRENT_ATTACHMENT_MAP
+            CURRENT_ATTACHMENT_MAP = build_attachment_map(page_entry.get("attachments", []))
 
             # Wrap in a root element with the Confluence namespaces declared,
             # so the XML parser understands ac: and ri: prefixed tags.

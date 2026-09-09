@@ -87,6 +87,32 @@ function Invoke-WithRetry {
     }
 }
 
+function Invoke-ConfluenceApi {
+    # Invoke-RestMethod guesses the response encoding from the Content-Type
+    # header, and falls back to ISO-8859-1 when no charset is present -
+    # Confluence's REST API often omits one. That silently mangles every
+    # non-ASCII character (smart quotes, en/em dashes, accents) into
+    # "Â"-style garbled text in the extracted HTML. Fetch the raw bytes instead
+    # and decode as UTF-8 ourselves so page content comes through intact.
+    param([string]$Uri)
+
+    $response = Invoke-WebRequest -Uri $Uri -Headers $headers -Method Get -UseBasicParsing
+
+    if ($response.RawContentStream) {
+        $bytes = $response.RawContentStream.ToArray()
+    }
+    elseif ($response.Content -is [byte[]]) {
+        $bytes = $response.Content
+    }
+    else {
+        # Content already came back as a (possibly wrongly-decoded) string -
+        # undo the ISO-8859-1 guess to recover the original UTF-8 bytes.
+        $bytes = [System.Text.Encoding]::GetEncoding("ISO-8859-1").GetBytes($response.Content)
+    }
+
+    return [System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
+}
+
 function Get-SanitisedFilename {
     param([string]$Name)
     $invalidChars = '<>:"/\|?*'
@@ -125,8 +151,8 @@ function Get-AllPagesInSpace {
 
     while ($true) {
         Write-Host "Fetching page list: start=$start, limit=$PageSize"
-        $uri = "$BaseUrl/rest/api/content?spaceKey=$SpaceKey&type=page&start=$start&limit=$PageSize&expand=body.storage,version"
-        $data = Invoke-WithRetry { Invoke-RestMethod -Uri $uri -Headers $headers -Method Get }
+        $uri = "$BaseUrl/rest/api/content?spaceKey=$SpaceKey&type=page&start=$start&limit=$PageSize&expand=body.storage,version,ancestors"
+        $data = Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
 
         $results = $data.results
         $allPages += $results
@@ -144,8 +170,8 @@ function Get-AllPagesInSpace {
 
 function Get-SinglePage {
     param([string]$PageId)
-    $uri = "$BaseUrl/rest/api/content/${PageId}?expand=body.storage,version"
-    Invoke-WithRetry { Invoke-RestMethod -Uri $uri -Headers $headers -Method Get }
+    $uri = "$BaseUrl/rest/api/content/${PageId}?expand=body.storage,version,ancestors"
+    Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
 }
 
 function Get-AttachmentsForPage {
@@ -157,7 +183,7 @@ function Get-AttachmentsForPage {
 
     while ($true) {
         $uri = "$BaseUrl/rest/api/content/$PageId/child/attachment?start=$start&limit=$limit"
-        $data = Invoke-WithRetry { Invoke-RestMethod -Uri $uri -Headers $headers -Method Get }
+        $data = Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
 
         $results = $data.results
         $attachments += $results
@@ -253,7 +279,13 @@ foreach ($page in $pages) {
                     $destPath = Join-Path $imagesFolder $safeAttName
 
                     Save-Attachment -DownloadPath $downloadLink -DestPath $destPath
-                    $attachmentRecords += $safeAttName
+                    # Keep both names: the page's HTML references images by
+                    # their original Confluence filename, which can differ
+                    # from what actually got saved to disk (sanitised
+                    # characters, or a _2 suffix from a name collision). The
+                    # converter needs this mapping to resolve them back to
+                    # the file that's actually there.
+                    $attachmentRecords += [PSCustomObject]@{ filename = $attTitle; saved_as = $safeAttName }
                 }
                 catch {
                     Write-Host "    Warning: failed to download attachment '$attTitle':" $_.Exception.Message
@@ -263,13 +295,20 @@ foreach ($page in $pages) {
             }
         }
 
+        # "ancestors" comes back ordered root-first, so the immediate parent
+        # (if any) is the last one - used to build the "Related pages"
+        # parent/children links in the SharePoint export.
+        $parent = if ($page.ancestors -and $page.ancestors.Count -gt 0) { $page.ancestors[-1] } else { $null }
+
         $manifest += [PSCustomObject]@{
-            id          = $pageId
-            title       = $title
-            folder      = "pages\${pageId}_$shortTitle"
-            html_file   = "content.html"
-            attachments = $attachmentRecords
-            version     = $page.version.number
+            id           = $pageId
+            title        = $title
+            folder       = "pages\${pageId}_$shortTitle"
+            html_file    = "content.html"
+            attachments  = $attachmentRecords
+            parent_id    = if ($parent) { $parent.id } else { $null }
+            parent_title = if ($parent) { $parent.title } else { $null }
+            version      = $page.version.number
         }
     }
     catch {
