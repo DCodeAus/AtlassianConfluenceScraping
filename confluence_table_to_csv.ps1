@@ -18,6 +18,9 @@ Run:
     .\confluence_table_to_csv.ps1 "On Call Register"
     .\confluence_table_to_csv.ps1 123456789   # page id also works
 
+Leave off the title/id and PowerShell will just ask for it instead - no
+need to already know how command-line arguments work.
+
 Written by Dan.
 #>
 
@@ -29,18 +32,11 @@ param(
     [string]$PageQuery
 )
 
-# Loads .NET's "LINQ to XML" library, used to read and walk through the
-# page's HTML content.
 Add-Type -AssemblyName System.Xml.Linq
 
-# Where confluence_extractor.ps1 saved everything, and where this
-# script's own output (the CSV files) goes.
 $exportDir = "confluence_export"
 $tableExportDir = "confluence_table_export"
 
-# Confluence storage format uses ac:/ri: prefixed elements alongside plain
-# XHTML - declaring these namespaces is what lets the XML parser
-# understand them.
 $namespaceDeclarations = @'
 xmlns:ac="http://www.atlassian.com/schema/confluence/4/ac/"
 xmlns:ri="http://www.atlassian.com/schema/confluence/4/ri/"
@@ -96,7 +92,6 @@ function Convert-NodeToPlainText {
 
     foreach ($childNode in $node.Nodes()) {
         if ($childNode -is [System.Xml.Linq.XText]) {
-            # Plain text - just add it as-is.
             [void]$stringBuilder.Append($childNode.Value)
         }
         elseif ($childNode -is [System.Xml.Linq.XElement]) {
@@ -139,10 +134,8 @@ function Get-TablesFromPage {
     param([System.Xml.Linq.XElement]$rootElement)
 
     $tables = [System.Collections.Generic.List[object]]::new()
-    # Find every <table> anywhere on the page.
     foreach ($tableElement in $rootElement.Descendants() | Where-Object { $_.Name.LocalName -eq "table" }) {
         $rows = [System.Collections.Generic.List[object]]::new()
-        # Within this one table, go row by row, cell by cell.
         foreach ($tableRow in $tableElement.Descendants() | Where-Object { $_.Name.LocalName -eq "tr" }) {
             $cells = $tableRow.Elements() | Where-Object { $_.Name.LocalName -in @("th", "td") }
             $cellValues = [System.Collections.Generic.List[string]]::new()
@@ -178,8 +171,6 @@ function Find-Page {
 }
 
 # --- Main ---
-# Everything above this line was just defining settings and helper
-# functions - this is where the script actually starts doing the work.
 
 $manifestPath = Join-Path $exportDir "manifest.json"
 if (-not (Test-Path $manifestPath)) {
@@ -193,7 +184,6 @@ if (-not (Test-Path $manifestPath)) {
 # object instead of a one-item array for a one-element JSON array.
 $manifest = @(Get-Content $manifestPath -Raw | ConvertFrom-Json)
 
-# Find the specific page that was asked for on the command line.
 $pageEntry = Find-Page -manifest $manifest -Query $PageQuery
 if (-not $pageEntry) {
     Write-Host "No page found matching '$PageQuery' (checked by title and id)."
@@ -207,17 +197,12 @@ if (-not (Test-Path $htmlPath)) {
     exit 1
 }
 
-# Read the page's raw content, and fix up any named entities the XML
-# parser wouldn't otherwise understand.
 $rawHtml = Get-Content $htmlPath -Raw -Encoding UTF8
 $rawHtml = ConvertTo-XmlSafeEntities $rawHtml
 
-# Wrap in a root element with the Confluence namespaces declared, then
-# actually parse it as XML.
 $wrappedHtml = "<root $namespaceDeclarations>$rawHtml</root>"
 $rootElement = [System.Xml.Linq.XElement]::Parse($wrappedHtml)
 
-# Pull out every table this page actually has.
 $tables = Get-TablesFromPage $rootElement
 
 if ($tables.Count -eq 0) {
@@ -236,8 +221,6 @@ for ($i = 0; $i -lt $tables.Count; $i++) {
     $outputPath = Join-Path $tableExportDir "$safeTitle$suffix.csv"
 
     $rows = $tables[$i]
-    # Turn each row (a list of cell strings) into one properly-formatted
-    # CSV line.
     $csvLines = foreach ($row in $rows) {
         ($row | ForEach-Object {
             # Minimal CSV quoting: only quote a field that actually needs

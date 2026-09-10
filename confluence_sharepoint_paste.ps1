@@ -26,12 +26,8 @@ Run:
 Written by Dan.
 #>
 
-# Loads .NET's "LINQ to XML" library, used to read and walk through each
-# page's HTML content.
 Add-Type -AssemblyName System.Xml.Linq
 
-# Where confluence_extractor.ps1 saved everything, and where this
-# script's own output goes.
 $exportDir = "confluence_export"
 $pasteExportDir = "confluence_sharepoint_paste"
 $classificationPath = Join-Path $exportDir "page_destinations.csv"
@@ -56,8 +52,6 @@ if (-not (Test-Path $classificationPath)) {
 # object instead of a one-item array for a one-element JSON array.
 $manifest = @(Get-Content $manifestPath -Raw | ConvertFrom-Json)
 
-# Build a lookup: page id -> its destination ("azure", "sharepoint", or
-# blank/other), read from the classification CSV.
 $classificationLookup = @{}
 foreach ($row in (Import-Csv -Path $classificationPath)) {
     $classificationLookup[$row.id] = ($row.destination -replace '\s', '').ToLower()
@@ -74,7 +68,6 @@ foreach ($row in (Import-Csv -Path $classificationPath)) {
 $sharePointPages = @($manifest | Where-Object { $classificationLookup[$_.id] -eq "sharepoint" })
 
 if (-not $sharePointPages -or $sharePointPages.Count -eq 0) {
-    # Nothing classified "sharepoint" yet - nothing for this script to do.
     Write-Host "No pages classified 'sharepoint' in the CSV yet, nothing to do."
     exit 0
 }
@@ -204,12 +197,9 @@ function Convert-NodeToHtml {
 
     foreach ($childNode in $node.Nodes()) {
         if ($childNode -is [System.Xml.Linq.XText]) {
-            # Plain text - escape it (see ConvertTo-EscapedHtmlText) and
-            # add it as-is.
             [void]$stringBuilder.Append((ConvertTo-EscapedHtmlText $childNode.Value))
         }
         elseif ($childNode -is [System.Xml.Linq.XElement]) {
-            # A nested tag - work out its own HTML equivalent.
             [void]$stringBuilder.Append((Convert-ElementToHtml $childNode))
         }
     }
@@ -227,28 +217,17 @@ function Convert-ElementToHtml {
     $tag = $childNode.Name.LocalName
 
     switch ($tag) {
-        # Headings carry straight across as real <h1>-<h6> tags.
         { $_ -in @("h1", "h2", "h3", "h4", "h5", "h6") } {
             return "<$tag>$(Convert-NodeToHtml $childNode)</$tag>"
         }
 
-        # A paragraph.
         "p" { return "<p>$(Convert-NodeToHtml $childNode)</p>" }
-
-        # A manual line break.
         "br" { return "<br>" }
-
-        # Bold text.
         { $_ -in @("strong", "b") } { return "<strong>$(Convert-NodeToHtml $childNode)</strong>" }
-
-        # Italic text.
         { $_ -in @("em", "i") } { return "<em>$(Convert-NodeToHtml $childNode)</em>" }
-
-        # Inline code.
         "code" { return "<code>$(Convert-NodeToHtml $childNode)</code>" }
 
         "a" {
-            # A regular hyperlink.
             $hrefAttribute = $childNode.Attributes() | Where-Object { $_.Name.LocalName -eq "href" } | Select-Object -First 1
             $linkText = Convert-NodeToHtml $childNode
             if ($hrefAttribute) {
@@ -347,13 +326,11 @@ function Convert-ElementToHtml {
         }
 
         "ul" {
-            # A bulleted list - each <li> becomes a real <li>.
             $items = ($childNode.Elements() | Where-Object { $_.Name.LocalName -eq "li" } | ForEach-Object { "<li>$(Convert-NodeToHtml $_)</li>" }) -join ""
             return "<ul>$items</ul>"
         }
 
         "ol" {
-            # A numbered list.
             $items = ($childNode.Elements() | Where-Object { $_.Name.LocalName -eq "li" } | ForEach-Object { "<li>$(Convert-NodeToHtml $_)</li>" }) -join ""
             return "<ol>$items</ol>"
         }
@@ -508,7 +485,6 @@ $warnings = @()
 
 $script:userDisplayNames = Get-UserDisplayNames
 
-# Go through every sharepoint-classified page, one at a time.
 foreach ($pageEntry in $sharePointPages) {
     $pageIndex++
     $htmlPath = Join-Path $exportDir (Join-Path $pageEntry.folder $pageEntry.html_file)
@@ -525,8 +501,6 @@ foreach ($pageEntry in $sharePointPages) {
     try {
         New-Item -ItemType Directory -Force -Path $destinationFolder | Out-Null
 
-        # Read the page's raw content, and fix up any named entities the
-        # XML parser wouldn't otherwise understand.
         $rawHtml = Get-Content $htmlPath -Raw -Encoding UTF8
         $rawHtml = ConvertTo-XmlSafeEntities $rawHtml
 
@@ -534,13 +508,9 @@ foreach ($pageEntry in $sharePointPages) {
         # while converting this specific page's images/attachments.
         $script:currentAttachmentMap = Get-AttachmentMap $pageEntry.attachments
 
-        # Wrap in a root element with the Confluence namespaces declared,
-        # then actually parse it as XML.
         $wrappedHtml = "<root $namespaceDeclarations>$rawHtml</root>"
         $rootElement = [System.Xml.Linq.XElement]::Parse($wrappedHtml)
 
-        # Do the real conversion, plus build the "Related pages" section
-        # and the Tags line (if this page has any labels).
         $bodyHtml = Convert-NodeToHtml $rootElement
         $relatedPagesHtml = Get-RelatedPagesHtml $pageEntry $childrenByParentId
 
@@ -548,10 +518,8 @@ foreach ($pageEntry in $sharePointPages) {
             "<p><strong>Tags:</strong> $(ConvertTo-EscapedHtmlText ($pageEntry.labels -join ', '))</p>"
         } else { "" }
 
-        # Slot everything into the page template from above.
         $pageHtml = $pageTemplate -f (ConvertTo-EscapedHtmlText $pageEntry.title), $tagsHtml, $bodyHtml, $relatedPagesHtml
 
-        # Save the finished, paste-ready HTML file.
         $outputPath = Join-Path $destinationFolder "content.html"
         [System.IO.File]::WriteAllText($outputPath, $pageHtml, (New-Object System.Text.UTF8Encoding($false)))
 

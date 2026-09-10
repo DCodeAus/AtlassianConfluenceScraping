@@ -33,9 +33,6 @@ param(
 # correct text (real accents, dashes, quotes) is told apart from garbled
 # text and left alone.
 try {
-    # The encoding the bug actually used - loaded once up front, with
-    # strict error handling so any character it can't cleanly convert
-    # throws an error rather than silently getting mangled.
     $windows1252 = [System.Text.Encoding]::GetEncoding(
         1252,
         [System.Text.EncoderFallback]::ExceptionFallback,
@@ -45,7 +42,6 @@ catch {
     Write-Error "Couldn't load the Windows-1252 code page: $($_.Exception.Message)"
     exit 1
 }
-# The correct encoding, also with strict error handling for the same reason.
 $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
 
 function Repair-Text {
@@ -65,7 +61,6 @@ function Repair-Text {
     $current = $Text
     $passes = 0
 
-    # Keep trying to "un-garble" the text, up to $MaxPasses times.
     for ($i = 0; $i -lt $MaxPasses; $i++) {
         try {
             # Re-encode the (possibly garbled) text as Windows-1252 bytes,
@@ -98,19 +93,36 @@ function Repair-Text {
     return @{ Text = $current; Passes = $passes }
 }
 
-# Build the full list of .html and .md files to check, across every
-# folder given in $Roots.
+# Say exactly where this is about to look, before doing anything -
+# otherwise the only feedback is a final "Fixed 0 of 0 files," which
+# looks identical whether nothing needed fixing or this just ran from
+# the wrong folder and found nothing at all.
+Write-Host "Looking for garbled .html/.md files in:"
+foreach ($root in $Roots) {
+    $note = if (Test-Path $root) { "" } else { "  <- doesn't exist, skipping" }
+    # Resolve-Path only works on a folder that actually exists - fall back
+    # to just showing where it would be, relative to the current folder,
+    # so a missing path still prints something useful instead of erroring.
+    $resolved = Resolve-Path -Path $root -ErrorAction SilentlyContinue
+    $displayPath = if ($resolved) { $resolved.Path } else { Join-Path (Get-Location) $root }
+    Write-Host "  $displayPath$note"
+}
+Write-Host ""
+
 $files = @()
 foreach ($root in $Roots) {
     if (-not (Test-Path $root)) {
-        Write-Host "Skipping $root, doesn't exist."
         continue
     }
     $files += Get-ChildItem -Path $root -Recurse -Include "*.html", "*.md" -File
 }
 
 if ($files.Count -eq 0) {
-    Write-Host ("No .html or .md files found under: " + ($Roots -join ", "))
+    Write-Host "No .html or .md files found in the folder(s) above."
+    Write-Host "If your confluence_export/confluence_markdown_export folders are"
+    Write-Host "somewhere else, either run this script from that location instead,"
+    Write-Host "or pass the path(s) directly, e.g.:"
+    Write-Host "    .\repair_garbled_text.ps1 -Roots C:\path\to\confluence_export"
     return
 }
 
@@ -119,8 +131,7 @@ $fixedCount = 0
 # than stopping the whole run.
 $unreadable = @()
 
-# Check every file, one at a time (sorted just so the output prints in a
-# predictable, easy-to-follow order).
+# Sorted just so the output prints in a predictable order.
 foreach ($file in ($files | Sort-Object FullName)) {
     try {
         $original = [System.IO.File]::ReadAllText($file.FullName, $strictUtf8)

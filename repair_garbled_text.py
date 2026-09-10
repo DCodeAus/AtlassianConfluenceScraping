@@ -81,16 +81,29 @@ def repair_text(text, max_passes=4):
 def main():
     roots = [Path(p) for p in (sys.argv[1:] or DEFAULT_ROOTS)]
 
+    # Say exactly where this is about to look, before doing anything -
+    # otherwise the only feedback is a final "Fixed 0 of 0 files," which
+    # looks identical whether nothing needed fixing or this just ran from
+    # the wrong folder and found nothing at all.
+    print("Looking for garbled .html/.md files in:")
+    for root in roots:
+        note = "" if root.exists() else "  <- doesn't exist, skipping"
+        print(f"  {root.resolve()}{note}")
+    print()
+
     files = []
     for root in roots:
         if not root.exists():
-            print(f"Skipping {root}, doesn't exist.")
             continue
         for pattern in FILE_PATTERNS:
             files.extend(root.rglob(pattern))
 
     if not files:
-        print("No .html or .md files found under: " + ", ".join(str(r) for r in roots))
+        print("No .html or .md files found in the folder(s) above.")
+        print("If your confluence_export/confluence_markdown_export folders are")
+        print("somewhere else, either run this script from that location instead,")
+        print("or pass the path(s) directly, e.g.:")
+        print("    python repair_garbled_text.py C:\\path\\to\\confluence_export")
         return
 
     fixed_count = 0

@@ -16,6 +16,9 @@ that first.
 
     python confluence_table_to_csv.py "On Call Register"
     python confluence_table_to_csv.py 123456789   (page id also works)
+
+Leave off the title/id and it'll just ask for it instead - no need to
+already know how command-line arguments work.
 """
 
 import csv
@@ -133,11 +136,14 @@ def find_page(manifest, query):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python confluence_table_to_csv.py <page title or id>")
-        return
+    # A title/id on the command line skips the prompt (handy for
+    # scripting); otherwise just ask - matches every other script here,
+    # none of them expect you to already know about command-line args.
+    query = sys.argv[1] if len(sys.argv) >= 2 else input("Which page? (title or id): ").strip()
 
-    query = sys.argv[1]
+    if not query:
+        print("No page given, nothing to do.")
+        return
 
     manifest_path = os.path.join(EXPORT_DIR, "manifest.json")
     if not os.path.exists(manifest_path):
