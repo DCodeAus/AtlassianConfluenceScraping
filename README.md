@@ -38,6 +38,8 @@ Just want the commands, in order, no explanation? Here they are - run each from 
 .\confluence_table_to_csv.ps1 "Page Title"
 ```
 
+**Not sure what a prompt is asking for?** Every question these scripts ask you - username, page ID, which page, whether to shorten a file name, anything - accepts a bare `?` as the answer. Type it and press Enter, and it'll explain what it wants and ask again, instead of you having to already know.
+
 ## Credentials, don't worry about them
 
 None of these scripts have a username or password sitting in the file. Run any of them and they'll just ask:
@@ -283,6 +285,6 @@ First time running Python, or having trouble with VS Code's terminal? `runningPy
 
 All of this uses the same read access you already have browsing Confluence normally, nothing here needs admin rights or anything elevated, just the ability to open the pages in the first place.
 
-## Written by
+## Supported by
 
-Dan.
+Daniel. If something's broken or doesn't make sense, that's who to ask.

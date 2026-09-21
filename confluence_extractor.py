@@ -27,16 +27,66 @@ import urllib.request
 BASE_URL = "https://confluence.yourcompany.com"   # no trailing slash
 SPACE_KEY = "ABC"   # used unless you enter a page ID below
 
+
+def input_with_help(prompt, help_lines):
+    """Like input(), but typing a bare "?" prints an explanation of what's
+    being asked for instead of being treated as the actual answer, then
+    asks again - so someone new to this doesn't have to already know what
+    to type before they can find out."""
+    while True:
+        answer = input(prompt)
+        if answer != "?":
+            return answer
+        for line in help_lines:
+            print(line)
+
+
+def getpass_with_help(prompt, help_lines):
+    """Same idea as input_with_help, but for a masked password prompt -
+    typing "?" isn't visibly different from typing anything else, so it's
+    only noticed here, after the (masked) input comes back."""
+    while True:
+        answer = getpass.getpass(prompt)
+        if answer != "?":
+            return answer
+        for line in help_lines:
+            print(line)
+
+
 # env vars for unattended runs, otherwise prompts
-USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input("Confluence username: ")
-PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass.getpass("Confluence password: ")
+USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input_with_help(
+    "Confluence username: ",
+    [
+        "This is the same username you use to log into Confluence in your",
+        "web browser - usually your email address or your company username.",
+        "If you're not sure, open Confluence in a browser first and check",
+        "what you log in with there.",
+    ],
+)
+PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass_with_help(
+    "Confluence password: ",
+    [
+        "This is the same password you use to log into Confluence in your",
+        "web browser. It's masked as you type (you won't see the characters",
+        "appear) - that's normal, just type it and press Enter.",
+    ],
+)
 
 # Asked every run so it's never silently assumed which mode you're about to
 # get. Leave blank for the whole space, or paste a page ID (from the page
 # URL, e.g. .../pages/123456789/Page+Title) to pull just that one page -
 # handy for a personal space or a one-off. Set CONFLUENCE_PAGE_ID for
 # unattended runs. Needs no more access than opening the page normally does.
-PAGE_ID = os.environ.get("CONFLUENCE_PAGE_ID") or input("Page ID to extract (leave blank for the whole space): ").strip()
+PAGE_ID = os.environ.get("CONFLUENCE_PAGE_ID") or input_with_help(
+    "Page ID to extract (leave blank for the whole space): ",
+    [
+        f"Leave this blank to pull every page in the '{SPACE_KEY}' space (set",
+        "near the top of this script). To pull just ONE page instead, open",
+        "that page in Confluence and look at the URL - it's the number right",
+        "after /pages/, e.g. .../pages/123456789/Page+Title means the Page ID",
+        "is 123456789.",
+    ],
+).strip()
 
 INTERNAL_CA_PATH = None   # e.g. r"C:\certs\company-root-ca.pem"
 VERIFY_SSL = True

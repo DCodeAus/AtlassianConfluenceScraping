@@ -20,10 +20,50 @@ import urllib.error
 BASE_URL = "https://confluence.yourcompany.com"   # no trailing slash
 SPACE_KEY = "ABC"                                   # it's in the page URL, /display/ABC/Page+Title
 
+def input_with_help(prompt, help_lines):
+    """Like input(), but typing a bare "?" prints an explanation of what's
+    being asked for instead of being treated as the actual answer, then
+    asks again - so someone new to this doesn't have to already know what
+    to type before they can find out."""
+    while True:
+        answer = input(prompt)
+        if answer != "?":
+            return answer
+        for line in help_lines:
+            print(line)
+
+
+def getpass_with_help(prompt, help_lines):
+    """Same idea as input_with_help, but for a masked password prompt -
+    typing "?" isn't visibly different from typing anything else, so it's
+    only noticed here, after the (masked) input comes back."""
+    while True:
+        answer = getpass.getpass(prompt)
+        if answer != "?":
+            return answer
+        for line in help_lines:
+            print(line)
+
+
 # Set CONFLUENCE_USERNAME / CONFLUENCE_PASSWORD as env vars for unattended
 # runs (cron etc), otherwise it just prompts.
-USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input("Confluence username: ")
-PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass.getpass("Confluence password: ")
+USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input_with_help(
+    "Confluence username: ",
+    [
+        "This is the same username you use to log into Confluence in your",
+        "web browser - usually your email address or your company username.",
+        "If you're not sure, open Confluence in a browser first and check",
+        "what you log in with there.",
+    ],
+)
+PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass_with_help(
+    "Confluence password: ",
+    [
+        "This is the same password you use to log into Confluence in your",
+        "web browser. It's masked as you type (you won't see the characters",
+        "appear) - that's normal, just type it and press Enter.",
+    ],
+)
 
 # "certificate verify failed" -> your org's internal CA isn't in Python's
 # trust store (your browser trusts it, Python keeps its own list - and

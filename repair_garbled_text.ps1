@@ -40,6 +40,23 @@ param(
     [switch]$Force
 )
 
+function Read-HostWithHelp {
+    # Like Read-Host, but typing a bare "?" prints an explanation of what's
+    # being asked for instead of being treated as the actual answer, then
+    # asks again - so someone new to this doesn't have to already know what
+    # to type before they can find out.
+    param([string]$Prompt, [string[]]$HelpText)
+    while ($true) {
+        $answer = Read-Host $Prompt
+        if ($answer -ne "?") {
+            return $answer
+        }
+        foreach ($line in $HelpText) {
+            Write-Host $line
+        }
+    }
+}
+
 # Strict fallbacks so a failed round-trip throws instead of silently
 # substituting '?' or U+FFFD - that failure is exactly how genuinely
 # correct text (real accents, dashes, quotes) is told apart from garbled
@@ -361,7 +378,13 @@ if ($stillSuspicious.Count -gt 0) {
         Write-Host "To live dangerously and strip these leftover characters from the"
         Write-Host "file(s) above right now, type YOLO and press Enter. Anything else"
         Write-Host "leaves them untouched."
-        $confirmation = (Read-Host "Strip leftover characters").Trim()
+        $confirmation = (Read-HostWithHelp "Strip leftover characters" @(
+                "Typing YOLO (exactly, capital letters) deletes just the leftover",
+                "marker character(s) shown in the snippet(s) above, from those",
+                "specific file(s) only - see 'Health check' above for exactly which",
+                "ones. Anything else, including just pressing Enter, leaves every",
+                "file untouched."
+            )).Trim()
         if ($confirmation -ceq "YOLO") {
             $logPath = "garbled_text_repair_log.json"
             $logEntries = @()

@@ -29,6 +29,19 @@ MARKDOWN_EXPORT_DIR = "confluence_markdown_export"
 CLASSIFICATION_PATH = os.path.join(EXPORT_DIR, "page_destinations.csv")
 CSV_FIELDNAMES = ["id", "title", "destination"]
 
+
+def input_with_help(prompt, help_lines):
+    """Like input(), but typing a bare "?" prints an explanation of what's
+    being asked for instead of being treated as the actual answer, then
+    asks again - so someone new to this doesn't have to already know what
+    to type before they can find out."""
+    while True:
+        answer = input(prompt)
+        if answer.strip() != "?":
+            return answer
+        for line in help_lines:
+            print(line)
+
 # Confluence storage format mixes plain XHTML with its own ac:/ri: prefixed
 # elements (macros, images, attachment refs) - declare the namespaces so the
 # parser doesn't choke on them.
@@ -425,7 +438,17 @@ def run_destination_check(bucket, destination_name, max_path_length, url_prompt,
     sharepoint) against only the pages classified into that bucket."""
     print(f"\n--- {destination_name} ({len(pages_in_bucket)} pages) ---")
     print(f"For an accurate check, paste in the {url_prompt}.")
-    destination_url_prefix = input("URL (leave blank for a rough estimate instead): ").strip()
+    destination_url_prefix = input_with_help(
+        "URL (leave blank for a rough estimate instead): ",
+        [
+            "This gets stuck on the front of each page's folder/file name to work",
+            f"out the FULL path length once it's actually uploaded to {destination_name} -",
+            "that's what actually has to fit under the character limit, not just",
+            "the folder/file name on its own. Paste the URL as described above.",
+            "Leaving it blank still runs the check, just as a rough estimate that",
+            "under-counts the real length (see the note that follows).",
+        ],
+    ).strip()
 
     if not destination_url_prefix:
         print("No URL given. Continuing with a ROUGH ESTIMATE based on folder")
@@ -461,7 +484,15 @@ def run_destination_check(bucket, destination_name, max_path_length, url_prompt,
     for affected in affected_pages:
         print(f"  - {affected['title']} (estimated length: {affected['length']})")
 
-    should_fix = input(f"\nShorten these automatically so they're {destination_name}-compliant? (y/n): ").strip().lower()
+    should_fix = input_with_help(
+        f"\nShorten these automatically so they're {destination_name}-compliant? (y/n): ",
+        [
+            "y = automatically shorten the file/folder names listed above so they",
+            f"fit under the {max_path_length} character limit (trims the title portion,",
+            "keeps the page id so nothing collides). n = leave them exactly as",
+            f"they are - they'll likely fail to upload to {destination_name} as-is.",
+        ],
+    ).strip().lower()
 
     if should_fix != "y":
         print(f"\nLeft as-is. These pages will likely fail on upload to {destination_name}.")

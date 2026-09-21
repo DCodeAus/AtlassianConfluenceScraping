@@ -23,7 +23,7 @@ far enough to get pages classified in the CSV) before this one.
 Run:
     .\confluence_sharepoint_paste.ps1
 
-Written by Dan.
+Supported by Daniel - raise issues with him.
 #>
 
 Add-Type -AssemblyName System.Xml.Linq

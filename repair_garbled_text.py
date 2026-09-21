@@ -40,6 +40,19 @@ from pathlib import Path
 DEFAULT_ROOTS = ["confluence_export", "confluence_markdown_export"]
 FILE_PATTERNS = ("*.html", "*.md")
 
+
+def input_with_help(prompt, help_lines):
+    """Like input(), but typing a bare "?" prints an explanation of what's
+    being asked for instead of being treated as the actual answer, then
+    asks again - so someone new to this doesn't have to already know what
+    to type before they can find out."""
+    while True:
+        answer = input(prompt)
+        if answer.strip() != "?":
+            return answer
+        for line in help_lines:
+            print(line)
+
 # Python's stdlib "cp1252" codec follows the strict Unicode.org table, which
 # leaves 5 byte values (0x81, 0x8D, 0x8F, 0x90, 0x9D) undefined and refuses
 # to encode/decode them. Windows' actual Windows-1252 - what PowerShell/.NET
@@ -287,7 +300,16 @@ def main():
             print("To live dangerously and strip these leftover characters from the")
             print("file(s) above right now, type YOLO and press Enter. Anything else")
             print("leaves them untouched.")
-            confirmation = input("Strip leftover characters: ").strip()
+            confirmation = input_with_help(
+                "Strip leftover characters: ",
+                [
+                    "Typing YOLO (exactly, capital letters) deletes just the leftover",
+                    "marker character(s) shown in the snippet(s) above, from those",
+                    "specific file(s) only - see 'Health check' above for exactly which",
+                    "ones. Anything else, including just pressing Enter, leaves every",
+                    "file untouched.",
+                ],
+            ).strip()
             if confirmation == "YOLO":
                 log_path = Path("garbled_text_repair_log.json")
                 log_entries = []

@@ -12,7 +12,7 @@ Run:
 
 DO NOT commit this file with real values filled in. See README.md.
 
-Written by Dan.
+Supported by Daniel - raise issues with him.
 #>
 
 # --- Fill these in ---
@@ -43,27 +43,61 @@ $RequestDelaySeconds = 0.3
 # CONFLUENCE_PASSWORD as environment variables instead and the prompts
 # below are skipped.
 
+function Read-HostWithHelp {
+    # Like Read-Host, but typing a bare "?" prints an explanation of what's
+    # being asked for instead of being treated as the actual answer, then
+    # asks again - so someone new to this doesn't have to already know what
+    # to type before they can find out.
+    param([string]$Prompt, [string[]]$HelpText)
+    while ($true) {
+        $answer = Read-Host $Prompt
+        if ($answer -ne "?") {
+            return $answer
+        }
+        foreach ($line in $HelpText) {
+            Write-Host $line
+        }
+    }
+}
+
 # Check if the username was already supplied as an environment variable
 # (handy for unattended/scheduled runs); if not, ask for it right now.
-$Username = if ($env:CONFLUENCE_USERNAME) { $env:CONFLUENCE_USERNAME } else { Read-Host "Confluence username" }
+$usernameHelp = @(
+    "This is the same username you use to log into Confluence in your",
+    "web browser - usually your email address or your company username.",
+    "If you're not sure, open Confluence in a browser first and check",
+    "what you log in with there."
+)
+$Username = if ($env:CONFLUENCE_USERNAME) { $env:CONFLUENCE_USERNAME } else { Read-HostWithHelp "Confluence username" $usernameHelp }
 
 if ($env:CONFLUENCE_PASSWORD) {
     # Environment variable already had it - just use that, no prompt.
     $Password = $env:CONFLUENCE_PASSWORD
 }
 else {
-    # Convert the secure string back to plain text only for the moment it's
-    # needed to build the auth header. It's held in memory only, never written
-    # to disk or displayed on screen.
-    # Ask for the password with the on-screen characters hidden (shows
-    # ***** instead of what's actually typed).
-    $SecurePassword = Read-Host "Confluence password" -AsSecureString
-    # The three lines below unscramble that hidden password back into
-    # normal readable text for just long enough to use it, then
-    # immediately wipe the unscrambled copy from memory again.
-    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
-    $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+    while ($true) {
+        # Convert the secure string back to plain text only for the moment it's
+        # needed to build the auth header. It's held in memory only, never written
+        # to disk or displayed on screen.
+        # Ask for the password with the on-screen characters hidden (shows
+        # ***** instead of what's actually typed).
+        $SecurePassword = Read-Host "Confluence password" -AsSecureString
+        # The three lines below unscramble that hidden password back into
+        # normal readable text for just long enough to use it, then
+        # immediately wipe the unscrambled copy from memory again.
+        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+        $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+
+        # Password input is masked, so typing "?" isn't visibly different
+        # from typing anything else - only found out here, after decoding.
+        if ($Password -ne "?") {
+            break
+        }
+        Write-Host "This is the same password you use to log into Confluence in your"
+        Write-Host "web browser. It's masked as you type (you won't see the characters"
+        Write-Host "appear) - that's normal, just type it and press Enter."
+    }
 }
 
 # Asked every run so it's never silently assumed which mode you're about to
@@ -71,7 +105,14 @@ else {
 # URL, e.g. .../pages/123456789/Page+Title) to pull just that one page -
 # handy for a personal space or a one-off. Set CONFLUENCE_PAGE_ID for
 # unattended runs. Needs no more access than opening the page normally does.
-$PageId = if ($env:CONFLUENCE_PAGE_ID) { $env:CONFLUENCE_PAGE_ID } else { (Read-Host "Page ID to extract (leave blank for the whole space)").Trim() }
+$pageIdHelp = @(
+    "Leave this blank to pull every page in the '$SpaceKey' space (set",
+    "near the top of this script). To pull just ONE page instead, open",
+    "that page in Confluence and look at the URL - it's the number right",
+    "after /pages/, e.g. .../pages/123456789/Page+Title means the Page ID",
+    "is 123456789."
+)
+$PageId = if ($env:CONFLUENCE_PAGE_ID) { $env:CONFLUENCE_PAGE_ID } else { (Read-HostWithHelp "Page ID to extract (leave blank for the whole space)" $pageIdHelp).Trim() }
 
 # Build the login credentials Confluence expects: username and password
 # joined together, then converted into the Base64 text format the "Basic

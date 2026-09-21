@@ -22,12 +22,29 @@ Run:
 
 Optional: edit $exportDir / $markdownExportDir below if your folder names differ.
 
-Written by Dan.
+Supported by Daniel - raise issues with him.
 #>
 
 # Loads .NET's "LINQ to XML" library, which this script uses to read and
 # walk through each page's HTML content.
 Add-Type -AssemblyName System.Xml.Linq
+
+function Read-HostWithHelp {
+    # Like Read-Host, but typing a bare "?" prints an explanation of what's
+    # being asked for instead of being treated as the actual answer, then
+    # asks again - so someone new to this doesn't have to already know what
+    # to type before they can find out.
+    param([string]$Prompt, [string[]]$HelpText)
+    while ($true) {
+        $answer = Read-Host $Prompt
+        if ($answer -ne "?") {
+            return $answer
+        }
+        foreach ($line in $HelpText) {
+            Write-Host $line
+        }
+    }
+}
 
 # Where confluence_extractor.ps1 saved everything (must match its
 # $OutputDir), and where this script's own output will go.
@@ -774,7 +791,15 @@ function Invoke-DestinationCheck {
 
     Write-Host "`n--- $destinationName ($($pagesInBucket.Count) pages) ---"
     Write-Host "For a proper accurate check, chuck in the $urlPrompt."
-    $destinationUrlPrefix = Read-Host "URL (leave it blank if you want a rough estimate instead)"
+    $urlHelp = @(
+        "This gets stuck on the front of each page's folder/file name to work",
+        "out the FULL path length once it's actually uploaded to $destinationName -",
+        "that's what actually has to fit under the character limit, not just",
+        "the folder/file name on its own. Paste the URL as described above.",
+        "Leaving it blank still runs the check, just as a rough estimate that",
+        "under-counts the real length (see the note that follows)."
+    )
+    $destinationUrlPrefix = Read-HostWithHelp "URL (leave it blank if you want a rough estimate instead)" $urlHelp
 
     if (-not $destinationUrlPrefix) {
         Write-Host "Fair enough, no URL. Carrying on with a ROUGH ESTIMATE based on"
@@ -819,7 +844,13 @@ function Invoke-DestinationCheck {
         Write-Host "  - $($affected.Title) (estimated length: $($affected.Length))"
     }
 
-    $shouldFix = Read-Host "`nWant these shortened automatically so they're $destinationName-compliant? (y/n)"
+    $shouldFixHelp = @(
+        "y = automatically shorten the file/folder names listed above so they",
+        "fit under the $maxPathLength character limit (trims the title portion,",
+        "keeps the page id so nothing collides). n = leave them exactly as",
+        "they are - they'll likely fail to upload to $destinationName as-is."
+    )
+    $shouldFix = Read-HostWithHelp "`nWant these shortened automatically so they're $destinationName-compliant? (y/n)" $shouldFixHelp
 
     if ($shouldFix -ne "y") {
         # They said no - leave the files as they are and just warn.

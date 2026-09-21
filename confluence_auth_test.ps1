@@ -10,7 +10,7 @@ note at the very bottom of this file.
 
 If it prints a page title, you're good to move to the full extractor.
 
-Written by Dan.
+Supported by Daniel - raise issues with him.
 #>
 
 # --- Fill these in ---
@@ -29,10 +29,34 @@ $SpaceKey = "ABC"                                    # find in the page URL, e.g
 # CONFLUENCE_PASSWORD as environment variables instead and the prompts
 # below are skipped.
 
+function Read-HostWithHelp {
+    # Like Read-Host, but typing a bare "?" prints an explanation of what's
+    # being asked for instead of being treated as the actual answer, then
+    # asks again - so someone new to this doesn't have to already know what
+    # to type before they can find out.
+    param([string]$Prompt, [string[]]$HelpText)
+    while ($true) {
+        $answer = Read-Host $Prompt
+        if ($answer -ne "?") {
+            return $answer
+        }
+        foreach ($line in $HelpText) {
+            Write-Host $line
+        }
+    }
+}
+
+$usernameHelp = @(
+    "This is the same username you use to log into Confluence in your",
+    "web browser - usually your email address or your company username.",
+    "If you're not sure, open Confluence in a browser first and check",
+    "what you log in with there."
+)
+
 # $env:CONFLUENCE_USERNAME checks whether that environment variable is
 # already set on this computer. If it is, use it. If not, ask the person
 # running the script to type their username, right here in the terminal.
-$Username = if ($env:CONFLUENCE_USERNAME) { $env:CONFLUENCE_USERNAME } else { Read-Host "Confluence username" }
+$Username = if ($env:CONFLUENCE_USERNAME) { $env:CONFLUENCE_USERNAME } else { Read-HostWithHelp "Confluence username" $usernameHelp }
 
 # Same idea for the password, but passwords need extra care so they don't
 # end up sitting in plain text in memory or on screen any longer than
@@ -43,22 +67,33 @@ if ($env:CONFLUENCE_PASSWORD) {
     $Password = $env:CONFLUENCE_PASSWORD
 }
 else {
-    # -AsSecureString means whatever's typed shows up as ***** on screen,
-    # and PowerShell keeps it scrambled in memory rather than as plain
-    # readable text - this is the "SecureString" object, not the actual
-    # password yet.
-    $SecurePassword = Read-Host "Confluence password" -AsSecureString
-    # To actually USE the password (e.g. to build a login header), it has
-    # to be unscrambled back into normal text for a moment. These next
-    # three lines do exactly that, as briefly as possible:
-    # 1. Get a temporary pointer to the unscrambled password in memory.
-    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
-    # 2. Read the actual password text from that pointer.
-    $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-    # 3. Immediately wipe that temporary unscrambled copy from memory -
-    #    don't leave a plain-text password sitting around any longer
-    #    than needed.
-    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+    while ($true) {
+        # -AsSecureString means whatever's typed shows up as ***** on screen,
+        # and PowerShell keeps it scrambled in memory rather than as plain
+        # readable text - this is the "SecureString" object, not the actual
+        # password yet.
+        $SecurePassword = Read-Host "Confluence password" -AsSecureString
+        # To actually USE the password (e.g. to build a login header), it has
+        # to be unscrambled back into normal text for a moment. These next
+        # three lines do exactly that, as briefly as possible:
+        # 1. Get a temporary pointer to the unscrambled password in memory.
+        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+        # 2. Read the actual password text from that pointer.
+        $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+        # 3. Immediately wipe that temporary unscrambled copy from memory -
+        #    don't leave a plain-text password sitting around any longer
+        #    than needed.
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+
+        # Password input is masked, so typing "?" isn't visibly different
+        # from typing anything else - only found out here, after decoding.
+        if ($Password -ne "?") {
+            break
+        }
+        Write-Host "This is the same password you use to log into Confluence in your"
+        Write-Host "web browser. It's masked as you type (you won't see the characters"
+        Write-Host "appear) - that's normal, just type it and press Enter."
+    }
 }
 
 # Confluence's API expects login credentials sent as "Basic Auth": your

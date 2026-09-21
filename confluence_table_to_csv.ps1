@@ -21,18 +21,46 @@ Run:
 Leave off the title/id and PowerShell will just ask for it instead - no
 need to already know how command-line arguments work.
 
-Written by Dan.
+Supported by Daniel - raise issues with him.
 #>
 
 # The one thing you actually have to supply when running this script -
 # either a page's exact title (in quotes if it has spaces) or its numeric
-# id. See Find-Page below for how this gets matched.
+# id. See Find-Page below for how this gets matched. Left off entirely,
+# it's asked for interactively instead (with "?" for help) rather than
+# using PowerShell's own built-in prompt, since that one can't show help.
 param(
-    [Parameter(Mandatory = $true)]
     [string]$PageQuery
 )
 
 Add-Type -AssemblyName System.Xml.Linq
+
+function Read-HostWithHelp {
+    # Like Read-Host, but typing a bare "?" prints an explanation of what's
+    # being asked for instead of being treated as the actual answer, then
+    # asks again - so someone new to this doesn't have to already know what
+    # to type before they can find out.
+    param([string]$Prompt, [string[]]$HelpText)
+    while ($true) {
+        $answer = Read-Host $Prompt
+        if ($answer -ne "?") {
+            return $answer
+        }
+        foreach ($line in $HelpText) {
+            Write-Host $line
+        }
+    }
+}
+
+$pageQueryHelp = @(
+    "Type the page's exact title as it appears in Confluence (not case",
+    "sensitive), e.g. On Call Register - or its numeric page id, which",
+    "you can find in the page's URL, e.g. .../pages/123456789/Page+Title",
+    "means the id is 123456789. Either one works."
+)
+while (-not $PageQuery) {
+    $PageQuery = (Read-HostWithHelp "Which page? (title or id)" $pageQueryHelp).Trim()
+}
 
 $exportDir = "confluence_export"
 $tableExportDir = "confluence_table_export"
