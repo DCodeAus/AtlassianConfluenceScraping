@@ -16,7 +16,9 @@ Just want the commands, in order, no explanation? Here they are - run each from 
 .\confluence_auth_test.ps1
 
 # 2. Only if you've got a confluence_export folder from BEFORE today, with
-#    garbled characters in it (Â, â€™) - skip this if this is your first run:
+#    garbled characters in it (Â, â€™) - skip this if this is your first run.
+#    Must be run from the same folder that CONTAINS confluence_export/, or
+#    it silently finds nothing to fix:
 .\repair_garbled_text.ps1
 
 # 3. Fill in the same $BaseUrl/$SpaceKey in confluence_extractor.ps1, then
@@ -219,7 +221,7 @@ pulls every table off that one page and writes each as a CSV into `confluence_ta
 
 New to this? Here's the order to actually run things in, start to finish. Everything below shows the PowerShell (`.ps1`) command - if you're on Mac/Linux or don't have PowerShell, swap each one for the matching `.py` file (e.g. `python confluence_extractor.py` instead of `.\confluence_extractor.ps1`), same order, same steps.
 
-1. **Grab this repo**, somewhere you can find it again.
+1. **Grab this repo**, somewhere you can find it again. Easiest way: on this repo's GitHub page, click the green **Code** button → **Download ZIP**, then unzip it. If you've got [Git](https://git-scm.com/downloads) installed and want to be able to pull future updates instead of re-downloading, `git clone` the repo's URL from that same **Code** button into a folder instead (see "Getting pages into Azure DevOps Wiki" below for a full walkthrough of installing/using git if you've never done it).
 
 2. **Test you can actually connect.** Open `confluence_auth_test.ps1` in a text editor, fill in `$BaseUrl` and `$SpaceKey` near the top (just your Confluence site address and space code, nothing sensitive), save, then run:
    ```

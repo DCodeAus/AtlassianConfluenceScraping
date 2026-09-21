@@ -2,6 +2,13 @@
 # a company's Confluence space, don't want that landing in git by accident.
 confluence_export/
 confluence_markdown_export/
+confluence_sharepoint_paste/
+confluence_table_export/
+
+# Log left by repair_garbled_text.ps1/.py's -Force strip option - just
+# records which files/snippets it touched, but the snippets are pulled
+# straight from real page content, so treat it the same as the exports.
+garbled_text_repair_log.json
 
 # Python
 __pycache__/
