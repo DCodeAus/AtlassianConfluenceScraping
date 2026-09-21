@@ -64,7 +64,10 @@ $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
 # them silently blocking the repair for a whole file.
 $encodableChars = [System.Collections.Generic.HashSet[char]]::new()
 for ($byteValue = 0; $byteValue -le 255; $byteValue++) {
-    [void]$encodableChars.Add($windows1252.GetString(@([byte]$byteValue))[0])
+    # Decode this one byte as Windows-1252 to find out which character it
+    # represents, and remember that character as "representable".
+    $decodedChar = $windows1252.GetString(@([byte]$byteValue))[0]
+    [void]$encodableChars.Add($decodedChar)
 }
 
 function Split-EncodableRuns {
@@ -108,10 +111,18 @@ function ConvertFrom-Cp1252BytesPartial {
     $pos = 0
     while ($pos -lt $Bytes.Length) {
         try {
+            # Try decoding everything from here to the end in one go.
             [void]$result.Append($strictUtf8.GetChars($Bytes, $pos, $Bytes.Length - $pos))
             $pos = $Bytes.Length
         }
         catch [System.Text.DecoderFallbackException] {
+            # That failed somewhere in the middle. .Index is how far into
+            # THIS attempt (not the whole byte array) it got before
+            # hitting trouble, and .BytesUnknown is the exact bad byte(s)
+            # it choked on. So: keep whatever decoded fine before that
+            # point, keep the bad byte(s) as their original Windows-1252
+            # character instead of guessing, then loop around and try
+            # again starting right after them.
             if ($_.Exception.Index -gt 0) {
                 [void]$result.Append($strictUtf8.GetChars($Bytes, $pos, $_.Exception.Index))
             }
@@ -269,6 +280,10 @@ foreach ($file in ($files | Sort-Object FullName)) {
     # first, so the summary below doesn't understate how many are there.
     $leftoverMatches = $suspiciousLeftovers.Matches($finalText)
     if ($leftoverMatches.Count -gt 0) {
+        # A "foreach" used like this - as a value being assigned, rather
+        # than just a loop - collects whatever each iteration produces
+        # into an array. So $snippets ends up holding one text snippet
+        # per match below (up to 3), in order.
         $snippets = foreach ($leftoverMatch in ($leftoverMatches | Select-Object -First 3)) {
             $start = [Math]::Max(0, $leftoverMatch.Index - 20)
             $end = [Math]::Min($finalText.Length, $leftoverMatch.Index + $leftoverMatch.Length + 20)

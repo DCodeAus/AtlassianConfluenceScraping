@@ -87,9 +87,16 @@ def _decode_utf8_partial(data):
     pos = 0
     while pos < len(data):
         try:
+            # Try decoding everything from here to the end in one go.
             parts.append(data[pos:].decode("utf-8"))
             pos = len(data)
         except UnicodeDecodeError as e:
+            # That failed somewhere in the middle. e.start/e.end are
+            # positions WITHIN data[pos:] (not the whole data), marking
+            # exactly the bad byte(s) it choked on. So: keep whatever
+            # decoded fine before that point, keep the bad byte(s) as
+            # their original Windows-1252 character instead of guessing,
+            # then loop around and try again starting right after them.
             if e.start > 0:
                 parts.append(data[pos:pos + e.start].decode("utf-8"))
             bad_start, bad_end = pos + e.start, pos + e.end
@@ -106,6 +113,10 @@ def _split_encodable_runs(text):
     the mis-decode bug (that bug only ever produces cp1252 characters), so
     splitting it into its own run stops it from blocking the repair of
     everything around it."""
+    # groupby only merges *consecutive* characters that share the same
+    # key (here: "is this character encodable?"), starting a new group
+    # the moment that answer flips - which is exactly the alternating
+    # runs this function is meant to produce.
     return [
         ("".join(group), is_encodable)
         for is_encodable, group in groupby(text, key=lambda ch: ch in _CHAR_TO_BYTE)
