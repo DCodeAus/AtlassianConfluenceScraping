@@ -14,18 +14,30 @@ extractor before the fix - the Python extractor was never affected.
 Run:
     .\repair_garbled_text.ps1
     .\repair_garbled_text.ps1 -Roots confluence_export, confluence_markdown_export
+    .\repair_garbled_text.ps1 -Force
 
 Defaults to confluence_export/ and confluence_markdown_export/ if -Roots
 isn't given. Walks every .html and .md file under each root. Files that
 aren't actually garbled are left untouched (the round-trip only succeeds
 on genuinely corrupted text - see Repair-Text below). Each file it does
 change gets a .bak backup alongside it first.
+
+If a file still looks garbled afterwards (the original bytes are gone,
+usually because something altered them further before this script ever
+saw them), -Force additionally offers to strip the leftover character -
+a safe-looking guess, not a guaranteed fix, which is why it's opt-in and
+requires both -Force AND typing "YOLO" when asked. Every file it strips
+gets logged, with a snippet and timestamp, to
+garbled_text_repair_log.json.
 #>
 
 # Which folders to scan. Defaults to both export folders if you don't
-# specify your own - e.g. .\repair_garbled_text.ps1 -Roots some_other_folder
+# specify your own - e.g. .\repair_garbled_text.ps1 -Roots some_other_folder.
+# -Force additionally allows stripping leftover unrepairable characters -
+# see the health check section near the bottom of this script.
 param(
-    [string[]]$Roots = @("confluence_export", "confluence_markdown_export")
+    [string[]]$Roots = @("confluence_export", "confluence_markdown_export"),
+    [switch]$Force
 )
 
 # Strict fallbacks so a failed round-trip throws instead of silently
@@ -267,27 +279,55 @@ if ($stillSuspicious.Count -gt 0) {
     Write-Host "confluence_extractor.ps1 again and enter that id when it asks for a"
     Write-Host "Page ID (leave it blank and it re-pulls the whole space instead)."
     Write-Host ""
-    Write-Host "If you'd rather not re-extract, most of these are a stray leftover"
-    Write-Host "character next to a space that's safe to just delete - but that's a"
-    Write-Host "guess, not a certainty, so it's not done automatically. To live"
-    Write-Host "dangerously and strip these leftover characters from the file(s)"
-    Write-Host "above right now, type YOLO and press Enter. Anything else leaves"
-    Write-Host "them untouched."
-    $confirmation = Read-Host "Strip leftover characters"
-    if ($confirmation -ceq "YOLO") {
-        foreach ($entry in $stillSuspicious) {
-            $strippedBackupPath = "$($entry.File).stripped.bak"
-            $currentContent = [System.IO.File]::ReadAllText($entry.File, $strictUtf8)
-            if (-not (Test-Path $strippedBackupPath)) {
-                Copy-Item -Path $entry.File -Destination $strippedBackupPath
-            }
-            $stripped = $suspiciousLeftovers.Replace($currentContent, "")
-            [System.IO.File]::WriteAllText($entry.File, $stripped, $strictUtf8)
-            Write-Host "Stripped: $($entry.File)"
-        }
-        Write-Host "Done. Pre-strip versions saved as *.stripped.bak."
+    if (-not $Force) {
+        Write-Host "If you'd rather not re-extract, most of these are a stray leftover"
+        Write-Host "character next to a space that's safe to just delete - but that's a"
+        Write-Host "guess, not a certainty, so it's not done automatically. Re-run this"
+        Write-Host "script with -Force if you want the option to strip them."
     }
     else {
-        Write-Host "Left untouched."
+        Write-Host "If you'd rather not re-extract, most of these are a stray leftover"
+        Write-Host "character next to a space that's safe to just delete - but that's a"
+        Write-Host "guess, not a certainty, so it's not done automatically. To live"
+        Write-Host "dangerously and strip these leftover characters from the file(s)"
+        Write-Host "above right now, type YOLO and press Enter. Anything else leaves"
+        Write-Host "them untouched."
+        $confirmation = Read-Host "Strip leftover characters"
+        if ($confirmation -ceq "YOLO") {
+            $logEntries = @()
+            $logPath = "garbled_text_repair_log.json"
+            if (Test-Path $logPath) {
+                $logEntries = @(Get-Content $logPath -Raw | ConvertFrom-Json)
+            }
+
+            foreach ($entry in $stillSuspicious) {
+                $strippedBackupPath = "$($entry.File).stripped.bak"
+                $currentContent = [System.IO.File]::ReadAllText($entry.File, $strictUtf8)
+                if (-not (Test-Path $strippedBackupPath)) {
+                    Copy-Item -Path $entry.File -Destination $strippedBackupPath
+                }
+                $stripped = $suspiciousLeftovers.Replace($currentContent, "")
+                [System.IO.File]::WriteAllText($entry.File, $stripped, $strictUtf8)
+                Write-Host "Stripped: $($entry.File)"
+
+                $logEntries += [PSCustomObject]@{
+                    file       = $entry.File
+                    snippet    = $entry.Snippet
+                    strippedAt = (Get-Date).ToString("o")
+                }
+            }
+
+            # -InputObject, not piped: piping a one-item array into
+            # ConvertTo-Json collapses it to a bare object instead of a
+            # one-item JSON array. WriteAllText with $strictUtf8, not
+            # Set-Content -Encoding UTF8: the latter adds a BOM on Windows
+            # PowerShell 5.1, which breaks a plain ConvertFrom-Json/re-read.
+            $logJson = ConvertTo-Json -InputObject $logEntries
+            [System.IO.File]::WriteAllText((Join-Path (Get-Location) $logPath), $logJson, $strictUtf8)
+            Write-Host "Done. Pre-strip versions saved as *.stripped.bak, logged to $logPath."
+        }
+        else {
+            Write-Host "Left untouched."
+        }
     }
 }

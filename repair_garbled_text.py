@@ -13,16 +13,27 @@ extractor before the fix - the Python extractor was never affected.
 
 Usage:
     python repair_garbled_text.py [root_dir ...]
+    python repair_garbled_text.py --force
 
 Defaults to confluence_export/ and confluence_markdown_export/ if no paths
 are given. Walks every .html and .md file under each root. Files that
 aren't actually garbled are left untouched (the round-trip only succeeds
 on genuinely corrupted text - see repair_text below). Each file it does
 change gets a .bak backup alongside it first.
+
+If a file still looks garbled afterwards (the original bytes are gone,
+usually because something altered them further before this script ever
+saw them), --force additionally offers to strip the leftover character -
+a safe-looking guess, not a guaranteed fix, which is why it's opt-in and
+requires both --force AND typing "YOLO" when asked. Every file it strips
+gets logged, with a snippet and timestamp, to
+garbled_text_repair_log.json.
 """
 
+import json
 import re
 import sys
+from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
 
@@ -116,7 +127,9 @@ def repair_text(text, max_passes=4):
 
 
 def main():
-    roots = [Path(p) for p in (sys.argv[1:] or DEFAULT_ROOTS)]
+    args = sys.argv[1:]
+    force = "--force" in args
+    roots = [Path(p) for p in ([a for a in args if a != "--force"] or DEFAULT_ROOTS)]
 
     # Say exactly where this is about to look, before doing anything -
     # otherwise the only feedback is a final "Fixed 0 of 0 files," which
@@ -200,25 +213,43 @@ def main():
         print("page's id in confluence_export/manifest.json, then run")
         print("confluence_extractor.py again and enter that id when it asks for a")
         print("Page ID (leave it blank and it re-pulls the whole space instead).")
-        print("\nIf you'd rather not re-extract, most of these are a stray leftover")
-        print("character next to a space that's safe to just delete - but that's a")
-        print("guess, not a certainty, so it's not done automatically. To live")
-        print("dangerously and strip these leftover characters from the file(s)")
-        print("above right now, type YOLO and press Enter. Anything else leaves")
-        print("them untouched.")
-        confirmation = input("Strip leftover characters: ")
-        if confirmation == "YOLO":
-            for file_path, _snippet in still_suspicious:
-                stripped_backup_path = file_path.with_name(file_path.name + ".stripped.bak")
-                current_content = file_path.read_text(encoding="utf-8")
-                if not stripped_backup_path.exists():
-                    stripped_backup_path.write_text(current_content, encoding="utf-8")
-                stripped = _SUSPICIOUS_LEFTOVERS.sub("", current_content)
-                file_path.write_text(stripped, encoding="utf-8")
-                print(f"Stripped: {file_path}")
-            print("Done. Pre-strip versions saved as *.stripped.bak.")
+        print()
+        if not force:
+            print("If you'd rather not re-extract, most of these are a stray leftover")
+            print("character next to a space that's safe to just delete - but that's a")
+            print("guess, not a certainty, so it's not done automatically. Re-run this")
+            print("script with --force if you want the option to strip them.")
         else:
-            print("Left untouched.")
+            print("If you'd rather not re-extract, most of these are a stray leftover")
+            print("character next to a space that's safe to just delete - but that's a")
+            print("guess, not a certainty, so it's not done automatically. To live")
+            print("dangerously and strip these leftover characters from the file(s)")
+            print("above right now, type YOLO and press Enter. Anything else leaves")
+            print("them untouched.")
+            confirmation = input("Strip leftover characters: ")
+            if confirmation == "YOLO":
+                log_path = Path("garbled_text_repair_log.json")
+                log_entries = json.loads(log_path.read_text(encoding="utf-8")) if log_path.exists() else []
+
+                for file_path, snippet in still_suspicious:
+                    stripped_backup_path = file_path.with_name(file_path.name + ".stripped.bak")
+                    current_content = file_path.read_text(encoding="utf-8")
+                    if not stripped_backup_path.exists():
+                        stripped_backup_path.write_text(current_content, encoding="utf-8")
+                    stripped = _SUSPICIOUS_LEFTOVERS.sub("", current_content)
+                    file_path.write_text(stripped, encoding="utf-8")
+                    print(f"Stripped: {file_path}")
+
+                    log_entries.append({
+                        "file": str(file_path),
+                        "snippet": snippet,
+                        "strippedAt": datetime.now(timezone.utc).astimezone().isoformat(),
+                    })
+
+                log_path.write_text(json.dumps(log_entries, indent=2), encoding="utf-8")
+                print(f"Done. Pre-strip versions saved as *.stripped.bak, logged to {log_path}.")
+            else:
+                print("Left untouched.")
 
 
 if __name__ == "__main__":
