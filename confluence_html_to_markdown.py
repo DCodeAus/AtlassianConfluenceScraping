@@ -441,10 +441,12 @@ def run_destination_check(bucket, destination_name, max_path_length, url_prompt,
     destination_url_prefix = input_with_help(
         "URL (leave blank for a rough estimate instead): ",
         [
-            f"The full {destination_name} path, prefix and all, is what has to fit",
-            "under the limit - not just the folder/file name on its own. Paste",
-            "the URL from the line above so this can check the real thing.",
-            "Blank still works, just as an under-counted rough guess (see below).",
+            "This gets stuck on the front of each page's folder/file name to work",
+            f"out the FULL path length once it's actually uploaded to {destination_name} -",
+            "that's what actually has to fit under the character limit, not just",
+            "the folder/file name on its own. Paste the URL as described above.",
+            "Leaving it blank still runs the check, just as a rough estimate that",
+            "under-counts the real length (see the note that follows).",
         ],
     ).strip()
 
@@ -485,9 +487,10 @@ def run_destination_check(bucket, destination_name, max_path_length, url_prompt,
     should_fix = input_with_help(
         f"\nShorten these automatically so they're {destination_name}-compliant? (y/n): ",
         [
-            f"y trims the title portion of each name above until it's under {max_path_length}",
-            "chars (page id stays, so nothing collides). n leaves them as they",
-            f"are, which will probably fail on upload to {destination_name}.",
+            "y = automatically shorten the file/folder names listed above so they",
+            f"fit under the {max_path_length} character limit (trims the title portion,",
+            "keeps the page id so nothing collides). n = leave them exactly as",
+            f"they are - they'll likely fail to upload to {destination_name} as-is.",
         ],
     ).strip().lower()
 

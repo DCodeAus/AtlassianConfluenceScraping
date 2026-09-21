@@ -57,15 +57,18 @@ def getpass_with_help(prompt, help_lines):
 USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input_with_help(
     "Confluence username: ",
     [
-        "Same login you'd use signing into Confluence normally - email or",
-        "company username. Same one confluence_auth_test.py asks for.",
+        "This is the same username you use to log into Confluence in your",
+        "web browser - usually your email address or your company username.",
+        "If you're not sure, open Confluence in a browser first and check",
+        "what you log in with there.",
     ],
 )
 PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass_with_help(
     "Confluence password: ",
     [
-        "Your normal Confluence password. Nothing shows as you type it -",
-        "that's expected, just carry on and press Enter.",
+        "This is the same password you use to log into Confluence in your",
+        "web browser. It's masked as you type (you won't see the characters",
+        "appear) - that's normal, just type it and press Enter.",
     ],
 )
 

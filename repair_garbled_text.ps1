@@ -81,7 +81,10 @@ $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
 # them silently blocking the repair for a whole file.
 $encodableChars = [System.Collections.Generic.HashSet[char]]::new()
 for ($byteValue = 0; $byteValue -le 255; $byteValue++) {
-    [void]$encodableChars.Add($windows1252.GetString(@([byte]$byteValue))[0])
+    # Decode this one byte as Windows-1252 to find out which character it
+    # represents, and remember that character as "representable".
+    $decodedChar = $windows1252.GetString(@([byte]$byteValue))[0]
+    [void]$encodableChars.Add($decodedChar)
 }
 
 function Split-EncodableRuns {
@@ -111,23 +114,34 @@ function Split-EncodableRuns {
 }
 
 function ConvertFrom-Cp1252BytesPartial {
-    # GetString bails on the first byte sequence that isn't valid UTF-8.
-    # We don't want that - one dud non-breaking space shouldn't stop the
-    # rest of a run from getting fixed. So decode in a loop instead: try
-    # the whole remaining chunk, and if that throws, keep whatever
-    # decoded fine, keep the bad byte(s) as their original cp1252
-    # character (not a guess), and carry on from right after them.
+    # Decodes bytes as UTF-8, but a single byte sequence that doesn't form
+    # a valid character (one genuinely unrecoverable spot, like a
+    # non-breaking space whose second byte got altered before this script
+    # ever saw it) doesn't have to block decoding everything else in the
+    # same run - unlike GetString, which fails the whole thing on the
+    # first bad sequence it hits. Whatever can't be decoded as UTF-8 is
+    # kept in its original Windows-1252 form and decoding continues from
+    # right after it.
     param([byte[]]$Bytes)
 
     $result = New-Object System.Text.StringBuilder
     $pos = 0
     while ($pos -lt $Bytes.Length) {
         try {
+            # Try decoding everything from here to the end in one go.
             [void]$result.Append($strictUtf8.GetChars($Bytes, $pos, $Bytes.Length - $pos))
             $pos = $Bytes.Length
         }
         catch [System.Text.DecoderFallbackException] {
-            # .Index/.BytesUnknown pinpoint exactly what broke, relative to $pos.
+            # Decoding failed partway through. .Index says how many
+            # bytes it got through first (counting from $pos, not from
+            # the start of $Bytes). .BytesUnknown is the exact bad
+            # byte(s) it choked on.
+            #
+            # Keep the part before the bad byte(s) (now correctly
+            # decoded), keep the bad byte(s) exactly as they were (their
+            # original Windows-1252 character, not a guess), then go
+            # round the loop again starting right after them.
             if ($_.Exception.Index -gt 0) {
                 [void]$result.Append($strictUtf8.GetChars($Bytes, $pos, $_.Exception.Index))
             }
@@ -169,10 +183,11 @@ function Repair-Text {
                 continue
             }
 
-            # Re-encode as cp1252 bytes and read them back as UTF-8 - if
-            # this was really garbled that way, this gets the original
-            # characters back. GetBytes can't throw here, everything in
-            # an "encodable" run is cp1252-representable by definition.
+            # Re-encode this run as Windows-1252 bytes, then read those same
+            # bytes back as UTF-8 - if it really was garbled this way, this
+            # recovers the original characters. Every character in this run
+            # is Windows-1252-encodable by construction (see
+            # Split-EncodableRuns), so GetBytes itself can't throw here.
             $bytes = $windows1252.GetBytes($run.Text)
             $candidate = ConvertFrom-Cp1252BytesPartial -Bytes $bytes
 
@@ -234,17 +249,31 @@ if ($files.Count -eq 0) {
     return
 }
 
-# What's left behind when Repair-Text can't fully fix something: a
-# mis-decoded lead byte (U+00C2-U+00F4, covers 2/3/4-byte UTF-8) sitting
-# next to one of the 32 chars cp1252 maps 0x80-0x9F to - "â€" is the
-# common one (curly quotes/dashes), but a mangled euro sign or similar
-# leaves a different pairing that's just as real. Also catches two of
-# those lead bytes stuck together with nothing between them, and a bare
-# "Â"/"Ã" on its own (usually a non-breaking space whose second byte
-# went walkabout). U+FFFD too, for the truly mangled cases.
+# Telltale leftovers of this mis-decode bug that Repair-Text couldn't (or
+# didn't) resolve. Three shapes:
 #
-# Real prose can occasionally contain a genuine standalone Â or Ã
-# (French names etc), so a hit here isn't proof - just worth a look.
+# 1. A UTF-8 lead byte (U+00C2-U+00F4 once mis-decoded - covers every
+#    2/3/4-byte UTF-8 sequence, not just the common ones) immediately
+#    followed by one of the 32 characters Windows-1252 maps bytes
+#    0x80-0x9F to. That specific combination is what's left when a
+#    multi-byte character's follow-on byte(s) got altered or truncated -
+#    "â€" (curly quotes/dashes/ellipsis) is the most common case, but a
+#    damaged euro sign or similar produces a different, equally genuine
+#    one. Real prose essentially never puts an accented letter directly
+#    in front of one of these 32 symbols, so this combination alone is a
+#    reliable signature.
+# 2. Two of those same lead-byte characters sitting directly next to
+#    each other - two separate broken sequences with nothing between
+#    them.
+# 3. A bare "Â" or "Ã" with nothing recognisable after it - what's left
+#    of a non-breaking space (or similar) whose second byte became
+#    something ordinary, like a plain space, instead. Real text
+#    occasionally contains a genuine standalone "Â" or "Ã" (e.g.
+#    French), so a hit here is a "go take a look", not proof the file is
+#    still broken.
+#
+# Plus U+FFFD, which shows up if a file got corrupted badly enough that
+# even a correct decode can't recover real characters.
 $secondByteChars = -join (0x80..0x9F | ForEach-Object { $windows1252.GetChars(@([byte]$_))[0] })
 $suspiciousLeftovers = [regex]("[Â-ô][" + [regex]::Escape($secondByteChars) + "]|[Â-ô][Â-ô]|Ã|Â|" + [char]0xFFFD)
 
@@ -281,11 +310,18 @@ foreach ($file in ($files | Sort-Object FullName)) {
         Write-Host "Fixed ($($result.Passes) $passLabel): $($file.FullName)"
     }
 
-    # Health check: does what's actually on disk now still look garbled,
-    # fixed or not? Grabs every match, not just the first, so the summary
-    # doesn't undersell how many spots are left in a file.
+    # Health check: whether this file got fixed, partially fixed, or left
+    # alone, does what's actually on disk now still look garbled? Catches
+    # the cases Repair-Text can't resolve on its own (like a corrupted
+    # character that got altered further by something else before this
+    # script ever saw it). Every matching spot is collected, not just the
+    # first, so the summary below doesn't understate how many are there.
     $leftoverMatches = $suspiciousLeftovers.Matches($finalText)
     if ($leftoverMatches.Count -gt 0) {
+        # A "foreach" used like this - as a value being assigned, rather
+        # than just a loop - collects whatever each iteration produces
+        # into an array. So $snippets ends up holding one text snippet
+        # per match below (up to 3), in order.
         $snippets = foreach ($leftoverMatch in ($leftoverMatches | Select-Object -First 3)) {
             $start = [Math]::Max(0, $leftoverMatch.Index - 20)
             $end = [Math]::Min($finalText.Length, $leftoverMatch.Index + $leftoverMatch.Length + 20)
