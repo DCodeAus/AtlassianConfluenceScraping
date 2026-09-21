@@ -233,7 +233,7 @@ if ($files.Count -eq 0) {
 }
 
 # Telltale leftovers of this mis-decode bug that Repair-Text couldn't (or
-# didn't) resolve. Two shapes:
+# didn't) resolve. Three shapes:
 #
 # 1. A UTF-8 lead byte (U+00C2-U+00F4 once mis-decoded - covers every
 #    2/3/4-byte UTF-8 sequence, not just the common ones) immediately
@@ -245,7 +245,10 @@ if ($files.Count -eq 0) {
 #    one. Real prose essentially never puts an accented letter directly
 #    in front of one of these 32 symbols, so this combination alone is a
 #    reliable signature.
-# 2. A bare "Â" or "Ã" with nothing recognisable after it - what's left
+# 2. Two of those same lead-byte characters sitting directly next to
+#    each other - two separate broken sequences with nothing between
+#    them.
+# 3. A bare "Â" or "Ã" with nothing recognisable after it - what's left
 #    of a non-breaking space (or similar) whose second byte became
 #    something ordinary, like a plain space, instead. Real text
 #    occasionally contains a genuine standalone "Â" or "Ã" (e.g.
@@ -255,7 +258,7 @@ if ($files.Count -eq 0) {
 # Plus U+FFFD, which shows up if a file got corrupted badly enough that
 # even a correct decode can't recover real characters.
 $secondByteChars = -join (0x80..0x9F | ForEach-Object { $windows1252.GetChars(@([byte]$_))[0] })
-$suspiciousLeftovers = [regex]("[Â-ô][" + [regex]::Escape($secondByteChars) + "]|Ã|Â|" + [char]0xFFFD)
+$suspiciousLeftovers = [regex]("[Â-ô][" + [regex]::Escape($secondByteChars) + "]|[Â-ô][Â-ô]|Ã|Â|" + [char]0xFFFD)
 
 $fixedCount = 0
 # Any file that can't even be read as valid UTF-8 gets noted here rather

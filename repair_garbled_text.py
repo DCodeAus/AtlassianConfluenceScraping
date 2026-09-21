@@ -55,7 +55,7 @@ _CHAR_TO_BYTE = {
 _BYTE_TO_CHAR = {byte: ch for ch, byte in _CHAR_TO_BYTE.items()}
 
 # Telltale leftovers of this mis-decode bug that repair_text couldn't (or
-# didn't) resolve. Two shapes:
+# didn't) resolve. Three shapes:
 #
 # 1. A UTF-8 lead byte (U+00C2-U+00F4 once mis-decoded - covers every
 #    2/3/4-byte UTF-8 sequence, not just the common ones) immediately
@@ -67,7 +67,10 @@ _BYTE_TO_CHAR = {byte: ch for ch, byte in _CHAR_TO_BYTE.items()}
 #    one. Real prose essentially never puts an accented letter directly
 #    in front of one of these 32 symbols, so this combination alone is a
 #    reliable signature.
-# 2. A bare "Â" or "Ã" with nothing recognisable after it - what's left
+# 2. Two of those same lead-byte characters sitting directly next to
+#    each other - two separate broken sequences with nothing between
+#    them.
+# 3. A bare "Â" or "Ã" with nothing recognisable after it - what's left
 #    of a non-breaking space (or similar) whose second byte became
 #    something ordinary, like a plain space, instead. Real text
 #    occasionally contains a genuine standalone "Â" or "Ã" (e.g.
@@ -77,7 +80,7 @@ _BYTE_TO_CHAR = {byte: ch for ch, byte in _CHAR_TO_BYTE.items()}
 # Plus U+FFFD, which shows up if a file got corrupted badly enough that
 # even a correct decode can't recover real characters.
 _SECOND_BYTE_CHARS = "".join(_BYTE_TO_CHAR[b] for b in range(0x80, 0xA0))
-_SUSPICIOUS_LEFTOVERS = re.compile(f"[Â-ô][{re.escape(_SECOND_BYTE_CHARS)}]|Ã|Â|�")
+_SUSPICIOUS_LEFTOVERS = re.compile(f"[Â-ô][{re.escape(_SECOND_BYTE_CHARS)}]|[Â-ô][Â-ô]|Ã|Â|�")
 
 
 def _windows_1252_encode(text):
