@@ -195,9 +195,11 @@ def main():
             print(f"      ...{snippet}...")
 
         print("\nRecommended next step: re-extract just these pages from Confluence")
-        print("(confluence_extractor.py, entering the page's title or id when asked)")
         print("rather than editing them by hand - the original bytes for these ones")
-        print("are gone, so this is the only way to get the real text back.")
+        print("are gone, so this is the only way to get the real text back. Find the")
+        print("page's id in confluence_export/manifest.json, then run")
+        print("confluence_extractor.py again and enter that id when it asks for a")
+        print("Page ID (leave it blank and it re-pulls the whole space instead).")
         print("\nIf you'd rather not re-extract, most of these are a stray leftover")
         print("character next to a space that's safe to just delete - but that's a")
         print("guess, not a certainty, so it's not done automatically. To live")
