@@ -206,12 +206,17 @@ def main():
         # left alone, does what's actually on disk now still look
         # garbled? Catches the cases repair_text can't resolve on its own
         # (like a corrupted character that got altered further by
-        # something else before this script ever saw it).
-        match = _SUSPICIOUS_LEFTOVERS.search(final_text)
-        if match:
-            start = max(0, match.start() - 20)
-            end = min(len(final_text), match.end() + 20)
-            still_suspicious.append((file_path, final_text[start:end]))
+        # something else before this script ever saw it). Every matching
+        # spot is collected, not just the first, so the summary below
+        # doesn't understate how many are there.
+        leftover_matches = list(_SUSPICIOUS_LEFTOVERS.finditer(final_text))
+        if leftover_matches:
+            snippets = []
+            for leftover_match in leftover_matches[:3]:
+                start = max(0, leftover_match.start() - 20)
+                end = min(len(final_text), leftover_match.end() + 20)
+                snippets.append(final_text[start:end])
+            still_suspicious.append((file_path, len(leftover_matches), snippets))
 
     print(f"\nDone. Fixed {fixed_count} of {len(files)} file(s).")
     if fixed_count:
@@ -226,9 +231,13 @@ def main():
         print(f"\nHealth check: {len(still_suspicious)} file(s) still contain something")
         print("that looks like leftover garbled text (or, occasionally, genuine")
         print("accented text that just happens to match - worth a quick look either way):")
-        for file_path, snippet in still_suspicious:
-            print(f"  - {file_path}")
-            print(f"      ...{snippet}...")
+        for file_path, count, snippets in still_suspicious:
+            print(f"  - {file_path} ({count} spot{'s' if count != 1 else ''})")
+            for snippet in snippets:
+                print(f"      ...{snippet}...")
+            not_shown = count - len(snippets)
+            if not_shown > 0:
+                print(f"      ...and {not_shown} more")
 
         print("\nRecommended next step: re-extract just these pages from Confluence")
         print("rather than editing them by hand - the original bytes for these ones")
@@ -237,24 +246,31 @@ def main():
         print("confluence_extractor.py again and enter that id when it asks for a")
         print("Page ID (leave it blank and it re-pulls the whole space instead).")
         print()
+        print("If you'd rather not re-extract, most of these are a stray leftover")
+        print("character next to a space that's safe to just delete - but that's a")
+        print("guess, not a certainty, so it's not done automatically.")
         if not force:
-            print("If you'd rather not re-extract, most of these are a stray leftover")
-            print("character next to a space that's safe to just delete - but that's a")
-            print("guess, not a certainty, so it's not done automatically. Re-run this")
-            print("script with --force if you want the option to strip them.")
+            print("Re-run this script with --force if you want the option to strip them.")
         else:
-            print("If you'd rather not re-extract, most of these are a stray leftover")
-            print("character next to a space that's safe to just delete - but that's a")
-            print("guess, not a certainty, so it's not done automatically. To live")
-            print("dangerously and strip these leftover characters from the file(s)")
-            print("above right now, type YOLO and press Enter. Anything else leaves")
-            print("them untouched.")
-            confirmation = input("Strip leftover characters: ")
+            print("To live dangerously and strip these leftover characters from the")
+            print("file(s) above right now, type YOLO and press Enter. Anything else")
+            print("leaves them untouched.")
+            confirmation = input("Strip leftover characters: ").strip()
             if confirmation == "YOLO":
                 log_path = Path("garbled_text_repair_log.json")
-                log_entries = json.loads(log_path.read_text(encoding="utf-8")) if log_path.exists() else []
+                log_entries = []
+                if log_path.exists():
+                    try:
+                        log_entries = json.loads(log_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        # Only this script ever writes this file, so a parse
+                        # failure here means it was hand-edited or damaged
+                        # somehow - rather than crash the whole run over a
+                        # log file, start a fresh one and keep going.
+                        print(f"Couldn't read the existing {log_path} (it may be corrupted) - starting a fresh log.")
+                        log_entries = []
 
-                for file_path, snippet in still_suspicious:
+                for file_path, count, snippets in still_suspicious:
                     stripped_backup_path = file_path.with_name(file_path.name + ".stripped.bak")
                     current_content = file_path.read_text(encoding="utf-8")
                     if not stripped_backup_path.exists():
@@ -265,7 +281,8 @@ def main():
 
                     log_entries.append({
                         "file": str(file_path),
-                        "snippet": snippet,
+                        "count": count,
+                        "snippet": snippets[0],
                         "strippedAt": datetime.now(timezone.utc).astimezone().isoformat(),
                     })
 

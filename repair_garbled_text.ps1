@@ -265,12 +265,16 @@ foreach ($file in ($files | Sort-Object FullName)) {
     # alone, does what's actually on disk now still look garbled? Catches
     # the cases Repair-Text can't resolve on its own (like a corrupted
     # character that got altered further by something else before this
-    # script ever saw it).
-    $match = $suspiciousLeftovers.Match($finalText)
-    if ($match.Success) {
-        $start = [Math]::Max(0, $match.Index - 20)
-        $end = [Math]::Min($finalText.Length, $match.Index + $match.Length + 20)
-        $stillSuspicious += @{ File = $file.FullName; Snippet = $finalText.Substring($start, $end - $start) }
+    # script ever saw it). Every matching spot is collected, not just the
+    # first, so the summary below doesn't understate how many are there.
+    $leftoverMatches = $suspiciousLeftovers.Matches($finalText)
+    if ($leftoverMatches.Count -gt 0) {
+        $snippets = foreach ($leftoverMatch in ($leftoverMatches | Select-Object -First 3)) {
+            $start = [Math]::Max(0, $leftoverMatch.Index - 20)
+            $end = [Math]::Min($finalText.Length, $leftoverMatch.Index + $leftoverMatch.Length + 20)
+            $finalText.Substring($start, $end - $start)
+        }
+        $stillSuspicious += @{ File = $file.FullName; Count = $leftoverMatches.Count; Snippets = @($snippets) }
     }
 }
 
@@ -293,8 +297,15 @@ if ($stillSuspicious.Count -gt 0) {
     Write-Host "that looks like leftover garbled text (or, occasionally, genuine"
     Write-Host "accented text that just happens to match - worth a quick look either way):"
     foreach ($entry in $stillSuspicious) {
-        Write-Host "  - $($entry.File)"
-        Write-Host "      ...$($entry.Snippet)..."
+        $spotLabel = if ($entry.Count -ne 1) { "spots" } else { "spot" }
+        Write-Host "  - $($entry.File) ($($entry.Count) $spotLabel)"
+        foreach ($snippet in $entry.Snippets) {
+            Write-Host "      ...$snippet..."
+        }
+        $notShown = $entry.Count - $entry.Snippets.Count
+        if ($notShown -gt 0) {
+            Write-Host "      ...and $notShown more"
+        }
     }
     Write-Host ""
     Write-Host "Recommended next step: re-extract just these pages from Confluence"
@@ -304,25 +315,32 @@ if ($stillSuspicious.Count -gt 0) {
     Write-Host "confluence_extractor.ps1 again and enter that id when it asks for a"
     Write-Host "Page ID (leave it blank and it re-pulls the whole space instead)."
     Write-Host ""
+    Write-Host "If you'd rather not re-extract, most of these are a stray leftover"
+    Write-Host "character next to a space that's safe to just delete - but that's a"
+    Write-Host "guess, not a certainty, so it's not done automatically."
     if (-not $Force) {
-        Write-Host "If you'd rather not re-extract, most of these are a stray leftover"
-        Write-Host "character next to a space that's safe to just delete - but that's a"
-        Write-Host "guess, not a certainty, so it's not done automatically. Re-run this"
-        Write-Host "script with -Force if you want the option to strip them."
+        Write-Host "Re-run this script with -Force if you want the option to strip them."
     }
     else {
-        Write-Host "If you'd rather not re-extract, most of these are a stray leftover"
-        Write-Host "character next to a space that's safe to just delete - but that's a"
-        Write-Host "guess, not a certainty, so it's not done automatically. To live"
-        Write-Host "dangerously and strip these leftover characters from the file(s)"
-        Write-Host "above right now, type YOLO and press Enter. Anything else leaves"
-        Write-Host "them untouched."
-        $confirmation = Read-Host "Strip leftover characters"
+        Write-Host "To live dangerously and strip these leftover characters from the"
+        Write-Host "file(s) above right now, type YOLO and press Enter. Anything else"
+        Write-Host "leaves them untouched."
+        $confirmation = (Read-Host "Strip leftover characters").Trim()
         if ($confirmation -ceq "YOLO") {
-            $logEntries = @()
             $logPath = "garbled_text_repair_log.json"
+            $logEntries = @()
             if (Test-Path $logPath) {
-                $logEntries = @(Get-Content $logPath -Raw | ConvertFrom-Json)
+                try {
+                    $logEntries = @(Get-Content $logPath -Raw | ConvertFrom-Json)
+                }
+                catch {
+                    # Only this script ever writes this file, so a parse
+                    # failure here means it was hand-edited or damaged
+                    # somehow - rather than crash the whole run over a log
+                    # file, start a fresh one and keep going.
+                    Write-Host "Couldn't read the existing $logPath (it may be corrupted) - starting a fresh log."
+                    $logEntries = @()
+                }
             }
 
             foreach ($entry in $stillSuspicious) {
@@ -337,7 +355,8 @@ if ($stillSuspicious.Count -gt 0) {
 
                 $logEntries += [PSCustomObject]@{
                     file       = $entry.File
-                    snippet    = $entry.Snippet
+                    count      = $entry.Count
+                    snippet    = $entry.Snippets[0]
                     strippedAt = (Get-Date).ToString("o")
                 }
             }
