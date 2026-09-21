@@ -76,8 +76,6 @@ If an older version of a script ever did have real credentials typed into it and
 | `runningPythonScriptsInVSCode.md` | If Python in VS Code is giving you grief (PATH errors, nothing happening when you hit run), this walks through it. |
 | `settingUpPowerAutomate.md` | First-time walkthrough for trying Power Automate as a way past the Entra ID wall blocking real SharePoint page automation. See "If you want to automate the SharePoint side further" below. |
 
-A couple of older files (`confluence_no_ssl_auth_test.py`, `confluence_auth_test_no_imports.py`) were working drafts from while I was sorting out the SSL cert issue. Everything useful from them is now folded into `confluence_auth_test.py`, so they're just clutter at this point, safe to delete.
-
 ## How the auth test works
 
 It logs in with your normal Confluence username and password, asks for one page from whichever space you point it at, and tells you straight away whether that worked. If it did, you're clear to run the real extractor. If you get a 401 or 403 or an SSL error, it'll tell you which and point at the fix, see Troubleshooting below.

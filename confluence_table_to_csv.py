@@ -150,21 +150,23 @@ def input_with_help(prompt, help_lines):
 
 def main():
     # A title/id on the command line skips the prompt (handy for
-    # scripting); otherwise just ask - matches every other script here,
-    # none of them expect you to already know about command-line args.
-    query = sys.argv[1] if len(sys.argv) >= 2 else input_with_help(
-        "Which page? (title or id): ",
-        [
-            "Type the page's exact title as it appears in Confluence (not case",
-            "sensitive), e.g. On Call Register - or its numeric page id, which",
-            "you can find in the page's URL, e.g. .../pages/123456789/Page+Title",
-            "means the id is 123456789. Either one works.",
-        ],
-    ).strip()
-
-    if not query:
-        print("No page given, nothing to do.")
-        return
+    # scripting); otherwise just ask, and keep asking until something's
+    # actually given - matches every other script here, none of them
+    # expect you to already know about command-line args.
+    if len(sys.argv) >= 2:
+        query = sys.argv[1]
+    else:
+        query = ""
+        while not query:
+            query = input_with_help(
+                "Which page? (title or id): ",
+                [
+                    "Type the page's exact title as it appears in Confluence (not case",
+                    "sensitive), e.g. On Call Register - or its numeric page id, which",
+                    "you can find in the page's URL, e.g. .../pages/123456789/Page+Title",
+                    "means the id is 123456789. Either one works.",
+                ],
+            ).strip()
 
     manifest_path = os.path.join(EXPORT_DIR, "manifest.json")
     if not os.path.exists(manifest_path):
