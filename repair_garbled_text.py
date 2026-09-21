@@ -21,11 +21,22 @@ on genuinely corrupted text - see repair_text below). Each file it does
 change gets a .bak backup alongside it first.
 """
 
+import re
 import sys
+from itertools import groupby
 from pathlib import Path
 
 DEFAULT_ROOTS = ["confluence_export", "confluence_markdown_export"]
 FILE_PATTERNS = ("*.html", "*.md")
+
+# Telltale leftovers of this mis-decode bug that repair_text couldn't (or
+# didn't) resolve - "Ã" and "â€" are how it mangles most accented letters
+# and curly quotes/dashes, "Â" is what it leaves in front of a stray
+# non-breaking space, and U+FFFD is what shows up if a file got corrupted
+# badly enough that even a correct decode can't recover real characters.
+# Real text occasionally contains a genuine "Â" or "Ã" (e.g. French), so a
+# hit here is a "go take a look", not proof the file is still broken.
+_SUSPICIOUS_LEFTOVERS = re.compile("Ã|Â|â€|�")
 
 # Python's stdlib "cp1252" codec follows the strict Unicode.org table, which
 # leaves 5 byte values (0x81, 0x8D, 0x8F, 0x90, 0x9D) undefined and refuses
@@ -51,6 +62,20 @@ def _windows_1252_encode(text):
         raise UnicodeEncodeError("windows-1252", text, 0, len(text), str(e)) from None
 
 
+def _split_encodable_runs(text):
+    """Breaks text into alternating runs of "every character here is
+    something Windows-1252 can represent" and "this run has at least one
+    character that isn't". A character outside cp1252's repertoire - an
+    emoji, a tick mark, a name in another script - can't have come from
+    the mis-decode bug (that bug only ever produces cp1252 characters), so
+    splitting it into its own run stops it from blocking the repair of
+    everything around it."""
+    return [
+        ("".join(group), is_encodable)
+        for is_encodable, group in groupby(text, key=lambda ch: ch in _CHAR_TO_BYTE)
+    ]
+
+
 def repair_text(text, max_passes=4):
     """Undoes one or more rounds of UTF-8 -> Windows-1252 mis-decoding.
 
@@ -67,13 +92,25 @@ def repair_text(text, max_passes=4):
     current = text
     passes = 0
     for _ in range(max_passes):
-        try:
-            candidate = _windows_1252_encode(current).decode("utf-8")
-        except (UnicodeEncodeError, UnicodeDecodeError):
+        any_run_improved = False
+        rebuilt = []
+        for run, is_encodable in _split_encodable_runs(current):
+            if not is_encodable:
+                rebuilt.append(run)
+                continue
+            try:
+                candidate = _windows_1252_encode(run).decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                rebuilt.append(run)
+                continue
+            if len(candidate) < len(run):
+                rebuilt.append(candidate)
+                any_run_improved = True
+            else:
+                rebuilt.append(run)
+        if not any_run_improved:
             break
-        if len(candidate) >= len(current):
-            break
-        current = candidate
+        current = "".join(rebuilt)
         passes += 1
     return current, passes
 
@@ -108,6 +145,7 @@ def main():
 
     fixed_count = 0
     unreadable = []
+    still_suspicious = []
 
     for file_path in sorted(files):
         try:
@@ -117,16 +155,27 @@ def main():
             continue
 
         repaired, passes = repair_text(original)
-        if passes == 0:
-            continue
+        final_text = repaired if passes else original
 
-        backup_path = file_path.with_name(file_path.name + ".bak")
-        if not backup_path.exists():
-            backup_path.write_text(original, encoding="utf-8")
+        if passes:
+            backup_path = file_path.with_name(file_path.name + ".bak")
+            if not backup_path.exists():
+                backup_path.write_text(original, encoding="utf-8")
 
-        file_path.write_text(repaired, encoding="utf-8")
-        fixed_count += 1
-        print(f"Fixed ({passes} pass{'es' if passes != 1 else ''}): {file_path}")
+            file_path.write_text(repaired, encoding="utf-8")
+            fixed_count += 1
+            print(f"Fixed ({passes} pass{'es' if passes != 1 else ''}): {file_path}")
+
+        # Health check: whether this file got fixed, partially fixed, or
+        # left alone, does what's actually on disk now still look
+        # garbled? Catches the cases repair_text can't resolve on its own
+        # (like a corrupted character that got altered further by
+        # something else before this script ever saw it).
+        match = _SUSPICIOUS_LEFTOVERS.search(final_text)
+        if match:
+            start = max(0, match.start() - 20)
+            end = min(len(final_text), match.end() + 20)
+            still_suspicious.append((file_path, final_text[start:end]))
 
     print(f"\nDone. Fixed {fixed_count} of {len(files)} file(s).")
     if fixed_count:
@@ -136,6 +185,38 @@ def main():
         print(f"\n{len(unreadable)} file(s) couldn't even be read as UTF-8, skipped:")
         for warning in unreadable:
             print(f"  - {warning}")
+
+    if still_suspicious:
+        print(f"\nHealth check: {len(still_suspicious)} file(s) still contain something")
+        print("that looks like leftover garbled text (or, occasionally, genuine")
+        print("accented text that just happens to match - worth a quick look either way):")
+        for file_path, snippet in still_suspicious:
+            print(f"  - {file_path}")
+            print(f"      ...{snippet}...")
+
+        print("\nRecommended next step: re-extract just these pages from Confluence")
+        print("(confluence_extractor.py, entering the page's title or id when asked)")
+        print("rather than editing them by hand - the original bytes for these ones")
+        print("are gone, so this is the only way to get the real text back.")
+        print("\nIf you'd rather not re-extract, most of these are a stray leftover")
+        print("character next to a space that's safe to just delete - but that's a")
+        print("guess, not a certainty, so it's not done automatically. To live")
+        print("dangerously and strip these leftover characters from the file(s)")
+        print("above right now, type YOLO and press Enter. Anything else leaves")
+        print("them untouched.")
+        confirmation = input("Strip leftover characters: ")
+        if confirmation == "YOLO":
+            for file_path, _snippet in still_suspicious:
+                stripped_backup_path = file_path.with_name(file_path.name + ".stripped.bak")
+                current_content = file_path.read_text(encoding="utf-8")
+                if not stripped_backup_path.exists():
+                    stripped_backup_path.write_text(current_content, encoding="utf-8")
+                stripped = _SUSPICIOUS_LEFTOVERS.sub("", current_content)
+                file_path.write_text(stripped, encoding="utf-8")
+                print(f"Stripped: {file_path}")
+            print("Done. Pre-strip versions saved as *.stripped.bak.")
+        else:
+            print("Left untouched.")
 
 
 if __name__ == "__main__":
