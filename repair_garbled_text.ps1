@@ -116,13 +116,15 @@ function ConvertFrom-Cp1252BytesPartial {
             $pos = $Bytes.Length
         }
         catch [System.Text.DecoderFallbackException] {
-            # That failed somewhere in the middle. .Index is how far into
-            # THIS attempt (not the whole byte array) it got before
-            # hitting trouble, and .BytesUnknown is the exact bad byte(s)
-            # it choked on. So: keep whatever decoded fine before that
-            # point, keep the bad byte(s) as their original Windows-1252
-            # character instead of guessing, then loop around and try
-            # again starting right after them.
+            # Decoding failed partway through. .Index says how many
+            # bytes it got through first (counting from $pos, not from
+            # the start of $Bytes). .BytesUnknown is the exact bad
+            # byte(s) it choked on.
+            #
+            # Keep the part before the bad byte(s) (now correctly
+            # decoded), keep the bad byte(s) exactly as they were (their
+            # original Windows-1252 character, not a guess), then go
+            # round the loop again starting right after them.
             if ($_.Exception.Index -gt 0) {
                 [void]$result.Append($strictUtf8.GetChars($Bytes, $pos, $_.Exception.Index))
             }

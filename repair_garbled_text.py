@@ -91,12 +91,14 @@ def _decode_utf8_partial(data):
             parts.append(data[pos:].decode("utf-8"))
             pos = len(data)
         except UnicodeDecodeError as e:
-            # That failed somewhere in the middle. e.start/e.end are
-            # positions WITHIN data[pos:] (not the whole data), marking
-            # exactly the bad byte(s) it choked on. So: keep whatever
-            # decoded fine before that point, keep the bad byte(s) as
-            # their original Windows-1252 character instead of guessing,
-            # then loop around and try again starting right after them.
+            # Decoding failed partway through. e.start/e.end mark the
+            # exact bad byte(s) it choked on, counted from pos (not from
+            # the start of data).
+            #
+            # Keep the part before the bad byte(s) (now correctly
+            # decoded), keep the bad byte(s) exactly as they were (their
+            # original Windows-1252 character, not a guess), then go
+            # round the loop again starting right after them.
             if e.start > 0:
                 parts.append(data[pos:pos + e.start].decode("utf-8"))
             bad_start, bad_end = pos + e.start, pos + e.end
