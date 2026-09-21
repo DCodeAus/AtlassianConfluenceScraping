@@ -93,6 +93,37 @@ function Split-EncodableRuns {
     return , $runs
 }
 
+function ConvertFrom-Cp1252BytesPartial {
+    # Decodes bytes as UTF-8, but a single byte sequence that doesn't form
+    # a valid character (one genuinely unrecoverable spot, like a
+    # non-breaking space whose second byte got altered before this script
+    # ever saw it) doesn't have to block decoding everything else in the
+    # same run - unlike GetString, which fails the whole thing on the
+    # first bad sequence it hits. Whatever can't be decoded as UTF-8 is
+    # kept in its original Windows-1252 form and decoding continues from
+    # right after it.
+    param([byte[]]$Bytes)
+
+    $result = New-Object System.Text.StringBuilder
+    $pos = 0
+    while ($pos -lt $Bytes.Length) {
+        try {
+            [void]$result.Append($strictUtf8.GetChars($Bytes, $pos, $Bytes.Length - $pos))
+            $pos = $Bytes.Length
+        }
+        catch [System.Text.DecoderFallbackException] {
+            if ($_.Exception.Index -gt 0) {
+                [void]$result.Append($strictUtf8.GetChars($Bytes, $pos, $_.Exception.Index))
+            }
+            $badStart = $pos + $_.Exception.Index
+            $badLength = $_.Exception.BytesUnknown.Length
+            [void]$result.Append($windows1252.GetChars($Bytes, $badStart, $badLength))
+            $pos = $badStart + $badLength
+        }
+    }
+    return $result.ToString()
+}
+
 function Repair-Text {
     # Undoes one or more rounds of UTF-8 -> Windows-1252 mis-decoding. A
     # genuine mis-decode always expands the text (each original multi-byte
@@ -122,19 +153,13 @@ function Repair-Text {
                 continue
             }
 
-            try {
-                # Re-encode this run as Windows-1252 bytes, then read those
-                # same bytes back as UTF-8 - if it really was garbled this
-                # way, this recovers the original characters.
-                $bytes = $windows1252.GetBytes($run.Text)
-                $candidate = $strictUtf8.GetString($bytes)
-            }
-            catch {
-                # Not valid UTF-8 once re-encoded - this run was never
-                # actually garbled. Keep it as-is.
-                [void]$rebuilt.Append($run.Text)
-                continue
-            }
+            # Re-encode this run as Windows-1252 bytes, then read those same
+            # bytes back as UTF-8 - if it really was garbled this way, this
+            # recovers the original characters. Every character in this run
+            # is Windows-1252-encodable by construction (see
+            # Split-EncodableRuns), so GetBytes itself can't throw here.
+            $bytes = $windows1252.GetBytes($run.Text)
+            $candidate = ConvertFrom-Cp1252BytesPartial -Bytes $bytes
 
             if ($candidate.Length -lt $run.Text.Length) {
                 # A real repair pass always makes the text shorter (see the

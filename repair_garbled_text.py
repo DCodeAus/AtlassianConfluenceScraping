@@ -61,6 +61,7 @@ _CHAR_TO_BYTE = {
     (chr(byte) if byte in _CP1252_GAPS else bytes([byte]).decode("cp1252")): byte
     for byte in range(256)
 }
+_BYTE_TO_CHAR = {byte: ch for ch, byte in _CHAR_TO_BYTE.items()}
 
 
 def _windows_1252_encode(text):
@@ -71,6 +72,30 @@ def _windows_1252_encode(text):
         return bytes(_CHAR_TO_BYTE[ch] for ch in text)
     except KeyError as e:
         raise UnicodeEncodeError("windows-1252", text, 0, len(text), str(e)) from None
+
+
+def _decode_utf8_partial(data):
+    """Decodes bytes as UTF-8, but a single byte sequence that doesn't form
+    a valid character (one genuinely unrecoverable spot, like a
+    non-breaking space whose second byte got altered before this script
+    ever saw it) doesn't have to block decoding everything else in the
+    data - unlike bytes.decode(), which fails the whole thing on the first
+    bad sequence it hits. Whatever can't be decoded as UTF-8 is kept in its
+    original Windows-1252 form and decoding continues from right after
+    it."""
+    parts = []
+    pos = 0
+    while pos < len(data):
+        try:
+            parts.append(data[pos:].decode("utf-8"))
+            pos = len(data)
+        except UnicodeDecodeError as e:
+            if e.start > 0:
+                parts.append(data[pos:pos + e.start].decode("utf-8"))
+            bad_start, bad_end = pos + e.start, pos + e.end
+            parts.append("".join(_BYTE_TO_CHAR[b] for b in data[bad_start:bad_end]))
+            pos = bad_end
+    return "".join(parts)
 
 
 def _split_encodable_runs(text):
@@ -109,11 +134,9 @@ def repair_text(text, max_passes=4):
             if not is_encodable:
                 rebuilt.append(run)
                 continue
-            try:
-                candidate = _windows_1252_encode(run).decode("utf-8")
-            except (UnicodeEncodeError, UnicodeDecodeError):
-                rebuilt.append(run)
-                continue
+            # Every character in this run is Windows-1252-encodable by
+            # construction (see _split_encodable_runs), so this can't raise.
+            candidate = _decode_utf8_partial(_windows_1252_encode(run))
             if len(candidate) < len(run):
                 rebuilt.append(candidate)
                 any_run_improved = True
