@@ -40,15 +40,6 @@ from pathlib import Path
 DEFAULT_ROOTS = ["confluence_export", "confluence_markdown_export"]
 FILE_PATTERNS = ("*.html", "*.md")
 
-# Telltale leftovers of this mis-decode bug that repair_text couldn't (or
-# didn't) resolve - "Ã" and "â€" are how it mangles most accented letters
-# and curly quotes/dashes, "Â" is what it leaves in front of a stray
-# non-breaking space, and U+FFFD is what shows up if a file got corrupted
-# badly enough that even a correct decode can't recover real characters.
-# Real text occasionally contains a genuine "Â" or "Ã" (e.g. French), so a
-# hit here is a "go take a look", not proof the file is still broken.
-_SUSPICIOUS_LEFTOVERS = re.compile("Ã|Â|â€|�")
-
 # Python's stdlib "cp1252" codec follows the strict Unicode.org table, which
 # leaves 5 byte values (0x81, 0x8D, 0x8F, 0x90, 0x9D) undefined and refuses
 # to encode/decode them. Windows' actual Windows-1252 - what PowerShell/.NET
@@ -62,6 +53,31 @@ _CHAR_TO_BYTE = {
     for byte in range(256)
 }
 _BYTE_TO_CHAR = {byte: ch for ch, byte in _CHAR_TO_BYTE.items()}
+
+# Telltale leftovers of this mis-decode bug that repair_text couldn't (or
+# didn't) resolve. Two shapes:
+#
+# 1. A UTF-8 lead byte (U+00C2-U+00F4 once mis-decoded - covers every
+#    2/3/4-byte UTF-8 sequence, not just the common ones) immediately
+#    followed by one of the 32 characters Windows-1252 maps bytes
+#    0x80-0x9F to. That specific combination is what's left when a
+#    multi-byte character's follow-on byte(s) got altered or truncated -
+#    "â€" (curly quotes/dashes/ellipsis) is the most common case, but a
+#    damaged euro sign or similar produces a different, equally genuine
+#    one. Real prose essentially never puts an accented letter directly
+#    in front of one of these 32 symbols, so this combination alone is a
+#    reliable signature.
+# 2. A bare "Â" or "Ã" with nothing recognisable after it - what's left
+#    of a non-breaking space (or similar) whose second byte became
+#    something ordinary, like a plain space, instead. Real text
+#    occasionally contains a genuine standalone "Â" or "Ã" (e.g.
+#    French), so a hit here is a "go take a look", not proof the file is
+#    still broken.
+#
+# Plus U+FFFD, which shows up if a file got corrupted badly enough that
+# even a correct decode can't recover real characters.
+_SECOND_BYTE_CHARS = "".join(_BYTE_TO_CHAR[b] for b in range(0x80, 0xA0))
+_SUSPICIOUS_LEFTOVERS = re.compile(f"[Â-ô][{re.escape(_SECOND_BYTE_CHARS)}]|Ã|Â|�")
 
 
 def _windows_1252_encode(text):

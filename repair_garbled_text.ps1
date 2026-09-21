@@ -233,13 +233,29 @@ if ($files.Count -eq 0) {
 }
 
 # Telltale leftovers of this mis-decode bug that Repair-Text couldn't (or
-# didn't) resolve - "Ã" and "â€" are how it mangles most accented letters
-# and curly quotes/dashes, "Â" is what it leaves in front of a stray
-# non-breaking space, and U+FFFD is what shows up if a file got corrupted
-# badly enough that even a correct decode can't recover real characters.
-# Real text occasionally contains a genuine "Â" or "Ã" (e.g. French), so a
-# hit here is a "go take a look", not proof the file is still broken.
-$suspiciousLeftovers = [regex]("Ã|Â|â€|" + [char]0xFFFD)
+# didn't) resolve. Two shapes:
+#
+# 1. A UTF-8 lead byte (U+00C2-U+00F4 once mis-decoded - covers every
+#    2/3/4-byte UTF-8 sequence, not just the common ones) immediately
+#    followed by one of the 32 characters Windows-1252 maps bytes
+#    0x80-0x9F to. That specific combination is what's left when a
+#    multi-byte character's follow-on byte(s) got altered or truncated -
+#    "â€" (curly quotes/dashes/ellipsis) is the most common case, but a
+#    damaged euro sign or similar produces a different, equally genuine
+#    one. Real prose essentially never puts an accented letter directly
+#    in front of one of these 32 symbols, so this combination alone is a
+#    reliable signature.
+# 2. A bare "Â" or "Ã" with nothing recognisable after it - what's left
+#    of a non-breaking space (or similar) whose second byte became
+#    something ordinary, like a plain space, instead. Real text
+#    occasionally contains a genuine standalone "Â" or "Ã" (e.g.
+#    French), so a hit here is a "go take a look", not proof the file is
+#    still broken.
+#
+# Plus U+FFFD, which shows up if a file got corrupted badly enough that
+# even a correct decode can't recover real characters.
+$secondByteChars = -join (0x80..0x9F | ForEach-Object { $windows1252.GetChars(@([byte]$_))[0] })
+$suspiciousLeftovers = [regex]("[Â-ô][" + [regex]::Escape($secondByteChars) + "]|Ã|Â|" + [char]0xFFFD)
 
 $fixedCount = 0
 # Any file that can't even be read as valid UTF-8 gets noted here rather
