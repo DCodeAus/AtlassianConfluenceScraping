@@ -67,31 +67,13 @@ _CHAR_TO_BYTE = {
 }
 _BYTE_TO_CHAR = {byte: ch for ch, byte in _CHAR_TO_BYTE.items()}
 
-# Telltale leftovers of this mis-decode bug that repair_text couldn't (or
-# didn't) resolve. Three shapes:
-#
-# 1. A UTF-8 lead byte (U+00C2-U+00F4 once mis-decoded - covers every
-#    2/3/4-byte UTF-8 sequence, not just the common ones) immediately
-#    followed by one of the 32 characters Windows-1252 maps bytes
-#    0x80-0x9F to. That specific combination is what's left when a
-#    multi-byte character's follow-on byte(s) got altered or truncated -
-#    "â€" (curly quotes/dashes/ellipsis) is the most common case, but a
-#    damaged euro sign or similar produces a different, equally genuine
-#    one. Real prose essentially never puts an accented letter directly
-#    in front of one of these 32 symbols, so this combination alone is a
-#    reliable signature.
-# 2. Two of those same lead-byte characters sitting directly next to
-#    each other - two separate broken sequences with nothing between
-#    them.
-# 3. A bare "Â" or "Ã" with nothing recognisable after it - what's left
-#    of a non-breaking space (or similar) whose second byte became
-#    something ordinary, like a plain space, instead. Real text
-#    occasionally contains a genuine standalone "Â" or "Ã" (e.g.
-#    French), so a hit here is a "go take a look", not proof the file is
-#    still broken.
-#
-# Plus U+FFFD, which shows up if a file got corrupted badly enough that
-# even a correct decode can't recover real characters.
+# Leftovers repair_text couldn't clean up: a mis-decoded UTF-8 lead byte
+# (U+00C2-U+00F4, so any 2/3/4-byte sequence, not just the common "â€"
+# curly-quote case) next to one of cp1252's 32 chars for bytes 0x80-0x9F,
+# two of those lead bytes back to back, or a bare "Â"/"Ã" on its own
+# (typically a non-breaking space that lost its second byte). U+FFFD too.
+# Real prose occasionally has a genuine standalone Â or Ã (French names
+# etc), so this is "go check it", not proof something's broken.
 _SECOND_BYTE_CHARS = "".join(_BYTE_TO_CHAR[b] for b in range(0x80, 0xA0))
 _SUSPICIOUS_LEFTOVERS = re.compile(f"[Â-ô][{re.escape(_SECOND_BYTE_CHARS)}]|[Â-ô][Â-ô]|Ã|Â|�")
 
@@ -107,30 +89,19 @@ def _windows_1252_encode(text):
 
 
 def _decode_utf8_partial(data):
-    """Decodes bytes as UTF-8, but a single byte sequence that doesn't form
-    a valid character (one genuinely unrecoverable spot, like a
-    non-breaking space whose second byte got altered before this script
-    ever saw it) doesn't have to block decoding everything else in the
-    data - unlike bytes.decode(), which fails the whole thing on the first
-    bad sequence it hits. Whatever can't be decoded as UTF-8 is kept in its
-    original Windows-1252 form and decoding continues from right after
-    it."""
+    """bytes.decode() gives up entirely on the first bad byte sequence.
+    We don't want that here - one broken non-breaking space shouldn't
+    stop the rest of a run getting fixed. Decode in a loop instead: keep
+    whatever decodes fine, fall back to the original cp1252 character for
+    whatever doesn't (not a guess), and keep going from right after it."""
     parts = []
     pos = 0
     while pos < len(data):
         try:
-            # Try decoding everything from here to the end in one go.
             parts.append(data[pos:].decode("utf-8"))
             pos = len(data)
         except UnicodeDecodeError as e:
-            # Decoding failed partway through. e.start/e.end mark the
-            # exact bad byte(s) it choked on, counted from pos (not from
-            # the start of data).
-            #
-            # Keep the part before the bad byte(s) (now correctly
-            # decoded), keep the bad byte(s) exactly as they were (their
-            # original Windows-1252 character, not a guess), then go
-            # round the loop again starting right after them.
+            # e.start/e.end pinpoint the bad byte(s), relative to pos.
             if e.start > 0:
                 parts.append(data[pos:pos + e.start].decode("utf-8"))
             bad_start, bad_end = pos + e.start, pos + e.end
@@ -147,10 +118,6 @@ def _split_encodable_runs(text):
     the mis-decode bug (that bug only ever produces cp1252 characters), so
     splitting it into its own run stops it from blocking the repair of
     everything around it."""
-    # groupby only merges *consecutive* characters that share the same
-    # key (here: "is this character encodable?"), starting a new group
-    # the moment that answer flips - which is exactly the alternating
-    # runs this function is meant to produce.
     return [
         ("".join(group), is_encodable)
         for is_encodable, group in groupby(text, key=lambda ch: ch in _CHAR_TO_BYTE)
@@ -179,8 +146,8 @@ def repair_text(text, max_passes=4):
             if not is_encodable:
                 rebuilt.append(run)
                 continue
-            # Every character in this run is Windows-1252-encodable by
-            # construction (see _split_encodable_runs), so this can't raise.
+            # can't raise - _split_encodable_runs already guarantees this
+            # run is entirely cp1252-representable.
             candidate = _decode_utf8_partial(_windows_1252_encode(run))
             if len(candidate) < len(run):
                 rebuilt.append(candidate)
@@ -247,13 +214,9 @@ def main():
             fixed_count += 1
             print(f"Fixed ({passes} pass{'es' if passes != 1 else ''}): {file_path}")
 
-        # Health check: whether this file got fixed, partially fixed, or
-        # left alone, does what's actually on disk now still look
-        # garbled? Catches the cases repair_text can't resolve on its own
-        # (like a corrupted character that got altered further by
-        # something else before this script ever saw it). Every matching
-        # spot is collected, not just the first, so the summary below
-        # doesn't understate how many are there.
+        # Health check: does what's on disk now still look garbled,
+        # fixed or not? Grabs every match so the summary doesn't
+        # undercount how many spots are left in a file.
         leftover_matches = list(_SUSPICIOUS_LEFTOVERS.finditer(final_text))
         if leftover_matches:
             snippets = []
@@ -303,11 +266,9 @@ def main():
             confirmation = input_with_help(
                 "Strip leftover characters: ",
                 [
-                    "Typing YOLO (exactly, capital letters) deletes just the leftover",
-                    "marker character(s) shown in the snippet(s) above, from those",
-                    "specific file(s) only - see 'Health check' above for exactly which",
-                    "ones. Anything else, including just pressing Enter, leaves every",
-                    "file untouched.",
+                    "YOLO (all caps, exactly that) removes the leftover marker(s) from",
+                    "the file(s) listed under Health check above and nothing else.",
+                    "Anything else - including just hitting Enter - does nothing.",
                 ],
             ).strip()
             if confirmation == "YOLO":

@@ -63,10 +63,8 @@ function Read-HostWithHelp {
 # Check if the username was already supplied as an environment variable
 # (handy for unattended/scheduled runs); if not, ask for it right now.
 $usernameHelp = @(
-    "This is the same username you use to log into Confluence in your",
-    "web browser - usually your email address or your company username.",
-    "If you're not sure, open Confluence in a browser first and check",
-    "what you log in with there."
+    "Same login you'd use signing into Confluence normally - email or",
+    "company username. Same one confluence_auth_test.ps1 asks for."
 )
 $Username = if ($env:CONFLUENCE_USERNAME) { $env:CONFLUENCE_USERNAME } else { Read-HostWithHelp "Confluence username" $usernameHelp }
 
@@ -94,9 +92,8 @@ else {
         if ($Password -ne "?") {
             break
         }
-        Write-Host "This is the same password you use to log into Confluence in your"
-        Write-Host "web browser. It's masked as you type (you won't see the characters"
-        Write-Host "appear) - that's normal, just type it and press Enter."
+        Write-Host "Your normal Confluence password. Nothing shows as you type it -"
+        Write-Host "that's expected, just carry on and press Enter."
     }
 }
 

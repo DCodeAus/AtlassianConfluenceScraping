@@ -161,10 +161,9 @@ def main():
             query = input_with_help(
                 "Which page? (title or id): ",
                 [
-                    "Type the page's exact title as it appears in Confluence (not case",
-                    "sensitive), e.g. On Call Register - or its numeric page id, which",
-                    "you can find in the page's URL, e.g. .../pages/123456789/Page+Title",
-                    "means the id is 123456789. Either one works.",
+                    "Either works: the page title exactly as Confluence shows it",
+                    "(case doesn't matter), or the numeric id from its URL -",
+                    ".../pages/123456789/Page+Title means 123456789.",
                 ],
             ).strip()
 
