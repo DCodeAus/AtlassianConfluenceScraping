@@ -25,7 +25,8 @@ flowchart TD
 
     J --> L[git push into Azure DevOps Wiki repo]
 
-    H --> N[confluence_sharepoint_paste.py/.ps1<br/>converts HTML to paste-ready HTML]
+    C --> N[confluence_sharepoint_paste.py/.ps1<br/>converts HTML to paste-ready HTML]
+    E --> N
     N --> M[Manual: paste into a new SharePoint page]
 
     C --> O[confluence_table_to_csv.py/.ps1<br/>one table off one page -> CSV]
