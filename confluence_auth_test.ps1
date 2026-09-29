@@ -1,4 +1,4 @@
-<#
+﻿<#
 Step 1: Test Confluence Server/Data Center REST API access.
 Native PowerShell version, no Python required.
 

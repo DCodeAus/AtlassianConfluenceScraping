@@ -1,4 +1,4 @@
-<#
+﻿<#
 Confluence HTML to Markdown converter.
 Reads manifest.json produced by confluence_extractor.ps1, converts each
 page's content.html into content.md, and routes the output into one of

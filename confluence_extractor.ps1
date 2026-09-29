@@ -1,4 +1,4 @@
-<#
+﻿<#
 Confluence extractor - PowerShell version.
 No install required. Reads trusted certificates from the Windows certificate
 store automatically, so no cert file path is needed here (unlike the Python

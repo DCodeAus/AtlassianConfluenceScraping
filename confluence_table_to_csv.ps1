@@ -1,4 +1,4 @@
-<#
+﻿<#
 Pulls one table off one Confluence page and writes it out as a CSV, ready
 for SharePoint's own "Create list from CSV/Excel" import.
 

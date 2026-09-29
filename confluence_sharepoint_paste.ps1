@@ -1,4 +1,4 @@
-<#
+﻿<#
 Confluence storage HTML -> paste-ready HTML for SharePoint.
 
 Automating SharePoint page creation needs an Entra ID app registration to
@@ -321,7 +321,12 @@ function Convert-ElementToHtml {
             $bodyNode = $childNode.Elements() | Where-Object { $_.Name.LocalName -eq "task-body" } | Select-Object -First 1
             $isComplete = $statusNode -and ($statusNode.Value.Trim().ToLower() -eq "complete")
             $bodyHtml = if ($bodyNode) { (Convert-NodeToHtml $bodyNode).Trim() } else { "" }
-            $checkbox = if ($isComplete) { "☑" } else { "☐" }
+            # Built from character codes, not typed literally - this file
+            # has no UTF-8 BOM, and a literal checkbox character here
+            # would risk getting silently corrupted on a Windows
+            # PowerShell 5.1 machine that reads it under the wrong
+            # codepage (see repair_garbled_text.ps1 for the full story).
+            $checkbox = if ($isComplete) { [char]0x2611 } else { [char]0x2610 }
             return "<li>$checkbox $bodyHtml</li>"
         }
 

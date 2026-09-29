@@ -1,4 +1,4 @@
-<#
+﻿<#
 Repairs text corrupted by the confluence_extractor.ps1 encoding bug (fixed
 in Invoke-ConfluenceApi): PowerShell decoded Confluence's UTF-8 response
 bytes as Windows-1252 before writing content.html, turning accents, curly
@@ -274,8 +274,25 @@ if ($files.Count -eq 0) {
 #
 # Plus U+FFFD, which shows up if a file got corrupted badly enough that
 # even a correct decode can't recover real characters.
+# Built entirely from character codes rather than typed literally - this
+# script file has no UTF-8 BOM, and Windows PowerShell 5.1 falls back to
+# reading a BOM-less script using the system's ANSI codepage instead of
+# UTF-8. On a machine where that codepage isn't UTF-8, a literal "Â-ô"
+# typed directly into this file would get silently corrupted on load -
+# exactly the class of bug this whole script exists to fix, just hitting
+# its own source this time. Building every character from its code point
+# sidesteps that regardless of how this file gets read.
+$leadByteStart = [char]0x00C2   # "Â"
+$leadByteEnd = [char]0x00F4     # "ô"
+$aCircumflex = [char]0x00C2     # "Â"
+$aTilde = [char]0x00C3          # "Ã"
+$replacementChar = [char]0xFFFD
 $secondByteChars = -join (0x80..0x9F | ForEach-Object { $windows1252.GetChars(@([byte]$_))[0] })
-$suspiciousLeftovers = [regex]("[Â-ô][" + [regex]::Escape($secondByteChars) + "]|[Â-ô][Â-ô]|Ã|Â|" + [char]0xFFFD)
+$suspiciousLeftovers = [regex](
+    "[$leadByteStart-$leadByteEnd][" + [regex]::Escape($secondByteChars) + "]" +
+    "|[$leadByteStart-$leadByteEnd][$leadByteStart-$leadByteEnd]" +
+    "|$aTilde|$aCircumflex|$replacementChar"
+)
 
 $fixedCount = 0
 # Any file that can't even be read as valid UTF-8 gets noted here rather
