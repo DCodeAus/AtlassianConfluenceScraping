@@ -259,6 +259,8 @@ First time running Python, or having trouble with VS Code's terminal? `runningPy
 
 ## When something goes wrong
 
+Hit the encoding bug below in the wild once - [whatHappenedEncodingBugPostmortem.md](whatHappenedEncodingBugPostmortem.md) has the full story if you want the detail behind the one-line fix.
+
 | What you're seeing | What's actually going on |
 |---|---|
 | `SSL certificate verify failed` | Confluence is using an internal cert Python doesn't automatically trust. Export it (browser padlock icon, or `certmgr.msc` if that's not locked down) and point `INTERNAL_CA_PATH` in the script at the exported file. Full steps are in the script's own comments. |
