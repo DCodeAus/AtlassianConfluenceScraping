@@ -209,6 +209,15 @@ def main():
         print(f"  {root.resolve()}{note}")
     print()
 
+    # This walk can take a genuinely long time with no feedback at all on
+    # a large export, especially over a network drive - every file and
+    # folder (images included) has to be visited to find the .html/.md
+    # ones, and there's no way to show incremental progress during a
+    # single rglob call. Say so up front, so a long silence here reads as
+    # "still working" rather than "stuck."
+    print("Scanning for .html/.md files - this can take a while on a large")
+    print("export or a network drive, with nothing printed while it works...")
+
     files = []
     for root in roots:
         if not root.exists():
@@ -224,11 +233,22 @@ def main():
         print("    python repair_garbled_text.py C:\\path\\to\\confluence_export")
         return
 
+    print(f"Found {len(files)} file(s) to check.\n")
+
     fixed_count = 0
     unreadable = []
     still_suspicious = []
 
-    for file_path in sorted(files):
+    # A file that doesn't need fixing prints nothing further down - on a
+    # big run that's long stretches of silence even once the scan above
+    # is done. Check in every 200 files so there's always something
+    # recent on screen, whether or not anything's actually being changed.
+    progress_interval = 200
+
+    for checked_count, file_path in enumerate(sorted(files), start=1):
+        if checked_count % progress_interval == 0:
+            print(f"...checked {checked_count} of {len(files)}")
+
         try:
             original = file_path.read_text(encoding="utf-8")
         except UnicodeDecodeError as e:

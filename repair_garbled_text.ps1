@@ -232,6 +232,15 @@ foreach ($root in $Roots) {
 }
 Write-Host ""
 
+# This walk can take a genuinely long time with no feedback at all on a
+# large export, especially over a network drive - Get-ChildItem has to
+# visit every file and folder (images included) to find the .html/.md
+# ones, and there's no way to show incremental progress during a single
+# -Recurse call. Say so up front, so a long silence here reads as "still
+# working" rather than "stuck."
+Write-Host "Scanning for .html/.md files - this can take a while on a large"
+Write-Host "export or a network drive, with nothing printed while it works..."
+
 $files = @()
 foreach ($root in $Roots) {
     if (-not (Test-Path $root)) {
@@ -248,6 +257,8 @@ if ($files.Count -eq 0) {
     Write-Host "    .\repair_garbled_text.ps1 -Roots C:\path\to\confluence_export"
     return
 }
+
+Write-Host "Found $($files.Count) file(s) to check.`n"
 
 # Telltale leftovers of this mis-decode bug that Repair-Text couldn't (or
 # didn't) resolve. Three shapes:
@@ -300,8 +311,20 @@ $fixedCount = 0
 $unreadable = @()
 $stillSuspicious = @()
 
+# A file that doesn't need fixing prints nothing at all further down - on
+# a big run that's long stretches of silence even once the scan above is
+# done. Check in every 200 files so there's always something recent on
+# screen, whether or not anything's actually being changed.
+$checkedCount = 0
+$progressInterval = 200
+
 # Sorted just so the output prints in a predictable order.
 foreach ($file in ($files | Sort-Object FullName)) {
+    $checkedCount++
+    if ($checkedCount % $progressInterval -eq 0) {
+        Write-Host "...checked $checkedCount of $($files.Count)"
+    }
+
     try {
         $original = [System.IO.File]::ReadAllText($file.FullName, $strictUtf8)
     }
