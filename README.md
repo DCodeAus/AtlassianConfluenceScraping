@@ -1,6 +1,22 @@
 # Atlassian Confluence Scraping
 
+*Get your team's docs out of Confluence and into Azure DevOps Wiki or SharePoint - no admin access, no API app registration, just the login you already use.*
+
+[![Release](https://img.shields.io/github/v/release/DCodeAus/AtlassianConfluenceScraping)](https://github.com/DCodeAus/AtlassianConfluenceScraping/releases)
+![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3%2C%20stdlib--only-3776AB?logo=python&logoColor=white)
+
 Pulls documentation out of a self-hosted Confluence instance and turns it into Markdown, split between Azure DevOps Wiki (technical docs) and SharePoint (everything else, onboarding etc). Built this because I needed to shift 500+ pages out of Confluence with no admin access, just an ordinary read login.
+
+## Why this exists
+
+- **No admin rights, anywhere.** Confluence, Azure DevOps, and SharePoint all just use the same access you already have browsing them normally.
+- **Nothing to install.** Whatever you've already got - the Python side is standard library only, the PowerShell side needs nothing beyond what Windows already ships with.
+- **Built for the messy real cases**, not just the happy path: broken encoding from old exports, table cells with multiple paragraphs, renamed/duplicate attachments, task lists, @mentions, page labels, file name length limits on both destinations.
+- **Every script explains itself.** Stuck on a prompt? Type `?` and it tells you what it's actually asking for.
+
+> [!TIP]
+> Grab a numbered version from [Releases](https://github.com/DCodeAus/AtlassianConfluenceScraping/releases) rather than whatever's currently on `main`, so you know exactly what you're running.
 
 The pipeline goes: test you can actually connect → pull every page down → classify each page as Azure or SharePoint → convert it all to Markdown, routed to the right spot → check it'll actually upload without falling over on file name limits.
 
