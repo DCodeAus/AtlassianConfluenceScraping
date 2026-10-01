@@ -311,19 +311,18 @@ $fixedCount = 0
 $unreadable = @()
 $stillSuspicious = @()
 
-# A file that doesn't need fixing prints nothing at all further down - on
-# a big run that's long stretches of silence even once the scan above is
-# done. Check in every 200 files so there's always something recent on
-# screen, whether or not anything's actually being changed.
+# A file that doesn't need fixing prints nothing at all further down, so
+# without this, a run can go a long time with nothing on screen. Printing
+# the file BEFORE reading it (not after) means if something ever does
+# genuinely hang here - a stuck network read, a locked file - the last
+# line on screen names exactly which file it got stuck on, rather than
+# leaving that a mystery.
 $checkedCount = 0
-$progressInterval = 200
 
 # Sorted just so the output prints in a predictable order.
 foreach ($file in ($files | Sort-Object FullName)) {
     $checkedCount++
-    if ($checkedCount % $progressInterval -eq 0) {
-        Write-Host "...checked $checkedCount of $($files.Count)"
-    }
+    Write-Host "[$checkedCount/$($files.Count)] Checking: $($file.FullName)"
 
     try {
         $original = [System.IO.File]::ReadAllText($file.FullName, $strictUtf8)

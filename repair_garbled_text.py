@@ -239,15 +239,14 @@ def main():
     unreadable = []
     still_suspicious = []
 
-    # A file that doesn't need fixing prints nothing further down - on a
-    # big run that's long stretches of silence even once the scan above
-    # is done. Check in every 200 files so there's always something
-    # recent on screen, whether or not anything's actually being changed.
-    progress_interval = 200
-
+    # A file that doesn't need fixing prints nothing further down, so
+    # without this, a run can go a long time with nothing on screen.
+    # Printing the file BEFORE reading it (not after) means if something
+    # ever does genuinely hang here - a stuck network read, a locked
+    # file - the last line on screen names exactly which file it got
+    # stuck on, rather than leaving that a mystery.
     for checked_count, file_path in enumerate(sorted(files), start=1):
-        if checked_count % progress_interval == 0:
-            print(f"...checked {checked_count} of {len(files)}")
+        print(f"[{checked_count}/{len(files)}] Checking: {file_path}")
 
         try:
             original = file_path.read_text(encoding="utf-8")
