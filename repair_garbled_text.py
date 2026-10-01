@@ -14,6 +14,16 @@ extractor before the fix - the Python extractor was never affected.
 Usage:
     python repair_garbled_text.py [root_dir ...]
     python repair_garbled_text.py --force
+    python repair_garbled_text.py --debug
+
+--debug breaks the single "Checking: <file>" line into one line per
+actual step (reading, repairing, backing up, writing), each with how
+long it took, plus the full exception (not just the short message) for
+any file that can't be read. Doesn't change what happens to any file,
+only what gets printed - safe to turn on for any run, since the step
+announcements print BEFORE each step runs, not after. If a step never
+completes, that line is the last thing on screen and names exactly
+what it was doing.
 
 Defaults to confluence_export/ and confluence_markdown_export/ if no paths
 are given. Walks every .html and .md file under each root. Files that
@@ -33,6 +43,8 @@ garbled_text_repair_log.json.
 import json
 import re
 import sys
+import time
+import traceback
 from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
@@ -197,7 +209,8 @@ def repair_text(text, max_passes=4):
 def main():
     args = sys.argv[1:]
     force = "--force" in args
-    roots = [Path(p) for p in ([a for a in args if a != "--force"] or DEFAULT_ROOTS)]
+    debug = "--debug" in args
+    roots = [Path(p) for p in ([a for a in args if a not in ("--force", "--debug")] or DEFAULT_ROOTS)]
 
     # Say exactly where this is about to look, before doing anything -
     # otherwise the only feedback is a final "Fixed 0 of 0 files," which
@@ -246,23 +259,51 @@ def main():
     # file - the last line on screen names exactly which file it got
     # stuck on, rather than leaving that a mystery.
     for checked_count, file_path in enumerate(sorted(files), start=1):
-        print(f"[{checked_count}/{len(files)}] Checking: {file_path}")
+        label = f"[{checked_count}/{len(files)}]"
 
+        if not debug:
+            print(f"{label} Checking: {file_path}")
+
+        if debug:
+            print(f"{label} Reading: {file_path}")
+            start = time.monotonic()
         try:
             original = file_path.read_text(encoding="utf-8")
         except UnicodeDecodeError as e:
+            if debug:
+                # The full traceback, not just the short message, in case
+                # that doesn't say enough to tell what actually went wrong.
+                print(f"  read failed:\n{traceback.format_exc()}")
             unreadable.append(f"{file_path}: {e}")
             continue
+        if debug:
+            print(f"  read: {(time.monotonic() - start) * 1000:.0f}ms")
 
+        if debug:
+            print(f"{label} Repairing: {file_path}")
+            start = time.monotonic()
         repaired, passes = repair_text(original)
         final_text = repaired if passes else original
+        if debug:
+            print(f"  repair: {(time.monotonic() - start) * 1000:.0f}ms, {passes} pass(es)")
 
         if passes:
+            if debug:
+                print(f"{label} Backing up: {file_path}")
+                start = time.monotonic()
             backup_path = file_path.with_name(file_path.name + ".bak")
             if not backup_path.exists():
                 backup_path.write_text(original, encoding="utf-8")
+            if debug:
+                print(f"  backup: {(time.monotonic() - start) * 1000:.0f}ms")
 
+            if debug:
+                print(f"{label} Writing: {file_path}")
+                start = time.monotonic()
             file_path.write_text(repaired, encoding="utf-8")
+            if debug:
+                print(f"  write: {(time.monotonic() - start) * 1000:.0f}ms")
+
             fixed_count += 1
             print(f"Fixed ({passes} pass{'es' if passes != 1 else ''}): {file_path}")
 

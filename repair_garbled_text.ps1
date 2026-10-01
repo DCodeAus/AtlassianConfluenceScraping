@@ -37,7 +37,18 @@ garbled_text_repair_log.json.
 # see the health check section near the bottom of this script.
 param(
     [string[]]$Roots = @("confluence_export", "confluence_markdown_export"),
-    [switch]$Force
+    [switch]$Force,
+    # Breaks the single "Checking: <file>" line into one line per actual
+    # step (reading, repairing, backing up, writing), each with how long
+    # it took. Doesn't change what happens to any file, only what gets
+    # printed - safe to turn on for any run, including one you suspect is
+    # stuck, since the step announcements print BEFORE each step runs,
+    # not after. If a step never completes, that line is the last thing
+    # on screen and names exactly what it was doing. Also prints the full
+    # exception (not just the short message) for any file that can't be
+    # read. There's nothing PowerShell-specific tied to this name - it's
+    # just this script's own switch, not the built-in -Debug machinery.
+    [switch]$Debug
 )
 
 function Read-HostWithHelp {
@@ -322,28 +333,67 @@ $checkedCount = 0
 # Sorted just so the output prints in a predictable order.
 foreach ($file in ($files | Sort-Object FullName)) {
     $checkedCount++
-    Write-Host "[$checkedCount/$($files.Count)] Checking: $($file.FullName)"
+    $label = "[$checkedCount/$($files.Count)]"
 
+    if (-not $Debug) {
+        Write-Host "$label Checking: $($file.FullName)"
+    }
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::new()
+    if ($Debug) {
+        Write-Host "$label Reading: $($file.FullName)"
+        $stopwatch.Restart()
+    }
     try {
         $original = [System.IO.File]::ReadAllText($file.FullName, $strictUtf8)
     }
     catch {
+        if ($Debug) {
+            # The full exception (not just .Message) in case the short
+            # version doesn't say enough to tell what actually went wrong.
+            Write-Host "  read failed: $($_.Exception.ToString())"
+        }
         $unreadable += "$($file.FullName): $($_.Exception.Message)"
         continue
     }
+    if ($Debug) {
+        Write-Host "  read: $($stopwatch.ElapsedMilliseconds)ms"
+    }
 
+    if ($Debug) {
+        Write-Host "$label Repairing: $($file.FullName)"
+        $stopwatch.Restart()
+    }
     $result = Repair-Text -Text $original
     $finalText = if ($result.Passes -gt 0) { $result.Text } else { $original }
+    if ($Debug) {
+        Write-Host "  repair: $($stopwatch.ElapsedMilliseconds)ms, $($result.Passes) pass(es)"
+    }
 
     if ($result.Passes -gt 0) {
         # Back up the original before overwriting it, so it's always
         # possible to get back to exactly what was there before.
+        if ($Debug) {
+            Write-Host "$label Backing up: $($file.FullName)"
+            $stopwatch.Restart()
+        }
         $backupPath = "$($file.FullName).bak"
         if (-not (Test-Path $backupPath)) {
             Copy-Item -Path $file.FullName -Destination $backupPath
         }
+        if ($Debug) {
+            Write-Host "  backup: $($stopwatch.ElapsedMilliseconds)ms"
+        }
 
+        if ($Debug) {
+            Write-Host "$label Writing: $($file.FullName)"
+            $stopwatch.Restart()
+        }
         [System.IO.File]::WriteAllText($file.FullName, $result.Text, $strictUtf8)
+        if ($Debug) {
+            Write-Host "  write: $($stopwatch.ElapsedMilliseconds)ms"
+        }
+
         $fixedCount++
         $passLabel = if ($result.Passes -ne 1) { "passes" } else { "pass" }
         Write-Host "Fixed ($($result.Passes) $passLabel): $($file.FullName)"
