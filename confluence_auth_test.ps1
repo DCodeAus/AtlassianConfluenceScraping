@@ -17,6 +17,13 @@ a separate username/password. Try again with:
 That skips the username/password prompts entirely and uses your current
 Windows login instead.
 
+Get a 407 (Proxy Authentication Required) error instead? This script
+already offers your Windows login to the proxy automatically on every
+run - if you're still seeing 407, the proxy itself needs something this
+script can't provide (a different login, or isn't using your Windows
+account at all), and that needs sorting out with whoever manages your
+network.
+
 Supported by Daniel - raise issues with him.
 #>
 
@@ -29,6 +36,19 @@ param(
     # that's the sign to try this instead.
     [switch]$UseDefaultCredentials
 )
+
+# Tells .NET to offer your current Windows login to the proxy if it ever
+# asks for one. Some corporate networks require an authenticated proxy to
+# reach the internet at all - without this, that fails with a confusing
+# "407 (Proxy Authentication Required)" error, since PowerShell doesn't
+# send proxy credentials automatically the way a browser does. Harmless
+# if there's no proxy in the way, or it doesn't need credentials - this
+# only does anything on a network that specifically needs it. Only lasts
+# for this one run, which is why it's set automatically here rather than
+# needing to be retyped by hand every time you open a new window.
+$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+[System.Net.WebRequest]::DefaultWebProxy = $proxy
 
 # --- Fill these in ---
 # $BaseUrl is the address of your Confluence site, with nothing after it
