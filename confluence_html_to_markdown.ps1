@@ -558,13 +558,35 @@ function Convert-NodeToMarkdown {
                     [void]$stringBuilder.Append("`n> **${panelLabel}:** $innerText`n")
                 }
                 else {
-                    # Unrecognised macro: keep any readable text inside it so
-                    # nothing is silently lost, flag it for manual review.
-                    $innerText = (Convert-NodeToMarkdown $childNode).Trim()
-                    if ($innerText) {
-                        [void]$stringBuilder.Append("`n<!-- unrecognised macro: $macroName -->`n$innerText`n")
-                    } else {
-                        [void]$stringBuilder.Append("`n<!-- unrecognised macro: $macroName (no text content) -->`n")
+                    # Confluence's inline file-preview box (current macro
+                    # name "view-file", older versions used separate macros
+                    # per file type - "viewpdf", "viewdoc", "viewxls",
+                    # "viewppt") shows a live preview of an attached PDF/
+                    # Office doc with no plain text alternative anywhere in
+                    # it - without this check it would fall straight through
+                    # to the generic "unrecognised macro" case below with
+                    # nothing to show, silently dropping the only reference
+                    # to that file. Checked generically, by looking for a
+                    # nested attachment reference, rather than matching
+                    # those specific macro names - also catches any other
+                    # preview-style macro built the same way.
+                    $previewAttachmentRef = $childNode.Descendants() | Where-Object { $_.Name.LocalName -eq "attachment" } | Select-Object -First 1
+                    $previewFilenameAttribute = if ($previewAttachmentRef) { $previewAttachmentRef.Attributes() | Where-Object { $_.Name.LocalName -eq "filename" } | Select-Object -First 1 } else { $null }
+
+                    if ($previewFilenameAttribute) {
+                        $previewFilename = $previewFilenameAttribute.Value
+                        $previewSavedName = if ($script:currentAttachmentMap.ContainsKey($previewFilename)) { $script:currentAttachmentMap[$previewFilename] } else { $previewFilename }
+                        [void]$stringBuilder.Append("`n[$previewFilename](<images/$previewSavedName>)`n")
+                    }
+                    else {
+                        # Unrecognised macro: keep any readable text inside it so
+                        # nothing is silently lost, flag it for manual review.
+                        $innerText = (Convert-NodeToMarkdown $childNode).Trim()
+                        if ($innerText) {
+                            [void]$stringBuilder.Append("`n<!-- unrecognised macro: $macroName -->`n$innerText`n")
+                        } else {
+                            [void]$stringBuilder.Append("`n<!-- unrecognised macro: $macroName (no text content) -->`n")
+                        }
                     }
                 }
             }

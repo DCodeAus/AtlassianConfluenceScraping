@@ -85,6 +85,16 @@ def find_child_by_local_name(elem, name):
             return child
     return None
 
+def find_descendant_by_local_name(elem, name):
+    # Like find_child_by_local_name, but looks at every level below elem,
+    # not just its direct children - needed for a macro like Confluence's
+    # inline file-preview box, where the attachment reference is nested
+    # a level deeper (inside its own <ac:parameter> wrapper).
+    for descendant in elem.iter():
+        if descendant is not elem and local_name(descendant.tag) == name:
+            return descendant
+    return None
+
 def get_attr(elem, local_attr_name):
     for key, value in elem.attrib.items():
         if local_name(key) == local_attr_name:
@@ -307,9 +317,26 @@ def convert_element_to_markdown(elem, list_depth):
             panel_label = macro_name.upper()
             return f"\n> **{panel_label}:** {inner_text}\n"
 
-        # only handling code/info/note/warning/tip specifically, everything else
-        # (page trees, Jira embeds, whatever) falls through here - keep the
-        # readable text so nothing's silently lost, flag it for manual review
+        # Confluence's inline file-preview box (current macro name
+        # "view-file", older versions used separate macros per file type -
+        # "viewpdf", "viewdoc", "viewxls", "viewppt") shows a live preview
+        # of an attached PDF/Office doc with no plain text alternative
+        # anywhere in it - without this check it would fall straight
+        # through to the generic case below with nothing to show, silently
+        # dropping the only reference to that file. Checked generically,
+        # by looking for a nested attachment reference anywhere inside the
+        # macro, rather than matching those specific macro names - also
+        # catches any other preview-style macro built the same way.
+        preview_attachment_ref = find_descendant_by_local_name(elem, "attachment")
+        preview_filename = get_attr(preview_attachment_ref, "filename") if preview_attachment_ref is not None else None
+        if preview_filename:
+            preview_saved_name = CURRENT_ATTACHMENT_MAP.get(preview_filename, preview_filename)
+            return f"\n[{preview_filename}](<images/{preview_saved_name}>)\n"
+
+        # only handling code/info/note/warning/tip/file-preview specifically,
+        # everything else (page trees, Jira embeds, whatever) falls through
+        # here - keep the readable text so nothing's silently lost, flag it
+        # for manual review
         inner_text = convert_node_to_markdown(elem).strip()
         if inner_text:
             return f"\n<!-- unrecognised macro: {macro_name} -->\n{inner_text}\n"
