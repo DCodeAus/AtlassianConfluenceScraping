@@ -34,6 +34,19 @@ always safe to share or commit as-is. Set CONFLUENCE_BASE_URL and
 CONFLUENCE_SPACE_KEY as environment variables for unattended runs, same
 idea as the credentials below.
 
+Also asks what to name the export folder, defaulting to one based on the
+space key (e.g. confluence_export_TEAM) - pulling a second space just
+means answering that differently, nothing overwrites your first export.
+Set CONFLUENCE_EXPORT_DIR to fix it in advance for unattended runs.
+confluence_html_to_markdown.ps1 (and the other scripts downstream of this
+one) ask the same thing, so give them the same folder name when it's
+that space's turn to be converted.
+
+Also writes a README.md into the export folder itself (source site/space,
+who ran it, the date, and page/attachment counts) - handy if this export
+ever leaves your machine without this script alongside it, e.g. uploaded
+as its own repo for a teammate.
+
 Get "Could not find a part of the path" partway through, on content.html
 or failures.json or manifest.json, even though folders are visibly being
 created? Fixed - this was Windows PowerShell 5.1 specifically: "cd"
@@ -127,10 +140,23 @@ $spaceKeyHelp = @(
 )
 $SpaceKey = if ($env:CONFLUENCE_SPACE_KEY) { $env:CONFLUENCE_SPACE_KEY } else { (Read-HostWithHelp "Confluence space key (leave blank if you'll give a page ID instead)" $spaceKeyHelp).Trim() }
 
+# Asked every run, same as everything else above, so pulling a second
+# space (or re-pulling the same one later) never silently overwrites an
+# export you already have - give each one its own folder name, e.g.
+# confluence_export_TEAM and confluence_export_personal. Leave blank for
+# the plain default. Set CONFLUENCE_EXPORT_DIR for unattended runs.
+$suggestedOutputDir = if ($SpaceKey) { "confluence_export_$SpaceKey" } else { "confluence_export" }
+$outputDirHelp = @(
+    "Where everything gets saved on your computer, relative to wherever",
+    "you run this script from. Worth naming per space (e.g.",
+    "confluence_export_TEAM) if you're going to extract more than one,",
+    "so a second extraction doesn't land in the same folder as the first.",
+    "Leave blank for: $suggestedOutputDir"
+)
+$OutputDir = if ($env:CONFLUENCE_EXPORT_DIR) { $env:CONFLUENCE_EXPORT_DIR } else { (Read-HostWithHelp "Export folder name (blank for '$suggestedOutputDir')" $outputDirHelp).Trim() }
+if (-not $OutputDir) { $OutputDir = $suggestedOutputDir }
+
 # --- Fill these in ---
-# Where everything gets saved on your computer, relative to wherever you
-# run this script from.
-$OutputDir = "confluence_export"
 # How many pages to ask Confluence for per request. Confluence won't hand
 # over an entire 500-page space in one go, so the script asks for this many
 # at a time and keeps asking for more until it's got everything (see
@@ -782,4 +808,55 @@ if ($failures.Count -gt 0) {
 }
 
 Write-Host "`nManifest saved to $manifestPath"
+
+# A plain-English README saved alongside the export itself - handy if
+# this folder ever leaves your machine (e.g. uploaded as its own repo for
+# a teammate), so where it came from and what's in it doesn't depend on
+# anyone remembering or still having this script around.
+$totalAttachments = ($manifest | ForEach-Object { $_.attachments.Count } | Measure-Object -Sum).Sum
+if (-not $totalAttachments) { $totalAttachments = 0 }
+$extractedBy = if ($env:USERNAME) { $env:USERNAME } elseif ($env:USER) { $env:USER } else { "unknown" }
+$sourceDescription = if ($SpaceKey) { "space '$SpaceKey'" } else { "page id $PageId" }
+$readmeLines = @(
+    "# Confluence export"
+    ""
+    "- Source: $BaseUrl ($sourceDescription)"
+    "- Extracted by: $extractedBy"
+    "- Extracted on: $(Get-Date -Format 'yyyy-MM-dd')"
+    "- Pages: $($manifest.Count)"
+    "- Attachments: $totalAttachments"
+)
+if ($failures.Count -gt 0) {
+    $readmeLines += "- Pages that failed to extract: $($failures.Count) (see failures.json)"
+}
+$readmeLines += @(
+    ""
+    "## Why Markdown?"
+    ""
+    "This gets converted to Markdown rather than kept as Confluence's raw"
+    "HTML (next step below) because plain text outlives any one platform -"
+    "no login wall, no proprietary format, readable by a person, a diff"
+    "tool, or an AI model with no conversion step first. As more of how we"
+    "search, summarise, and work with documentation runs through AI"
+    "tools, content that's already plain structured text is simply easier"
+    "for those tools to use well - we're building for where that's"
+    "heading, not just archiving where Confluence is leaving off."
+    ""
+    "## Next step"
+    ""
+    "To convert this into Markdown, run confluence_html_to_markdown.ps1"
+    "(or .py) and give it '$OutputDir' as the export folder to convert"
+    "when asked."
+)
+$readmePath = Join-Path $OutputDir "README.md"
+try {
+    Set-Utf8NoBomContent -Path $readmePath -Value (($readmeLines -join "`n") + "`n")
+    Write-Host "Wrote $readmePath"
+}
+catch {
+    # Not worth stopping over - everything else has already been saved,
+    # this is just a convenience summary.
+    Write-Host "Couldn't write $readmePath - $($_.Exception.Message)"
+}
+
 Write-Host "Next step: convert content.html files to Markdown."

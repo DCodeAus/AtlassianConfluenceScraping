@@ -21,6 +21,12 @@ confluence_html_to_markdown.py uses, so run that script first (at least
 far enough to get pages classified in the CSV) before this one.
 
     python confluence_sharepoint_paste.py
+
+Asks which export folder this is for and where to put the paste-ready
+.html files, defaulting to confluence_export / confluence_sharepoint_paste
+- give it the same export folder name you gave confluence_extractor for
+whichever space this is. Set CONFLUENCE_EXPORT_DIR and
+CONFLUENCE_PASTE_EXPORT_DIR to fix both in advance for unattended runs.
 """
 
 import csv
@@ -30,6 +36,22 @@ import re
 import shutil
 import xml.etree.ElementTree as ET
 
+
+def input_with_help(prompt, help_lines):
+    """Like input(), but typing a bare "?" prints an explanation of what's
+    being asked for instead of being treated as the actual answer, then
+    asks again."""
+    while True:
+        answer = input(prompt)
+        if answer != "?":
+            return answer
+        for line in help_lines:
+            print(line)
+
+
+# EXPORT_DIR / PASTE_EXPORT_DIR / CLASSIFICATION_PATH are set at the top of
+# main() instead of here, since which export to use is asked at runtime
+# rather than hardcoded - see the comment there.
 EXPORT_DIR = "confluence_export"
 PASTE_EXPORT_DIR = "confluence_sharepoint_paste"
 CLASSIFICATION_PATH = os.path.join(EXPORT_DIR, "page_destinations.csv")
@@ -378,6 +400,42 @@ def build_related_pages_html(page_entry, children_by_parent_id):
 
 
 def main():
+    global EXPORT_DIR, PASTE_EXPORT_DIR, CLASSIFICATION_PATH
+
+    # Asked every run rather than hardcoded, so pasting a second space's
+    # export just means answering this differently - give it the exact
+    # same name you gave the extractor for that space. Set
+    # CONFLUENCE_EXPORT_DIR for unattended runs.
+    EXPORT_DIR = os.environ.get("CONFLUENCE_EXPORT_DIR") or input_with_help(
+        "Export folder (blank for 'confluence_export'): ",
+        [
+            "Which extraction this is for - the exact folder name you gave",
+            "(or accepted the default for) when running",
+            "confluence_extractor.py/.ps1 for this space.",
+            "Leave blank for: confluence_export",
+        ],
+    ).strip() or "confluence_export"
+
+    # Suggest a matching output folder name, same idea as
+    # confluence_html_to_markdown.py, so a second space's paste-ready
+    # HTML doesn't land in (and overwrite) the first one's.
+    if EXPORT_DIR == "confluence_export":
+        suggested_paste_export_dir = "confluence_sharepoint_paste"
+    elif EXPORT_DIR.startswith("confluence_export"):
+        suggested_paste_export_dir = "confluence_sharepoint_paste" + EXPORT_DIR[len("confluence_export"):]
+    else:
+        suggested_paste_export_dir = f"confluence_sharepoint_paste_{EXPORT_DIR}"
+
+    PASTE_EXPORT_DIR = os.environ.get("CONFLUENCE_PASTE_EXPORT_DIR") or input_with_help(
+        f"Output folder (blank for '{suggested_paste_export_dir}'): ",
+        [
+            "Where the paste-ready .html files should go.",
+            f"Leave blank for: {suggested_paste_export_dir}",
+        ],
+    ).strip() or suggested_paste_export_dir
+
+    CLASSIFICATION_PATH = os.path.join(EXPORT_DIR, "page_destinations.csv")
+
     manifest_path = os.path.join(EXPORT_DIR, "manifest.json")
 
     if not os.path.exists(manifest_path):

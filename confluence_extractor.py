@@ -13,9 +13,23 @@ script's real target ever needs to be typed into the file itself, so it's
 always safe to share or commit as-is. Set CONFLUENCE_BASE_URL and
 CONFLUENCE_SPACE_KEY as environment variables for unattended runs, same
 idea as the credentials below.
+
+Also asks what to name the export folder, defaulting to one based on the
+space key (e.g. confluence_export_TEAM) - pulling a second space just
+means answering that differently, nothing overwrites your first export.
+Set CONFLUENCE_EXPORT_DIR to fix it in advance for unattended runs.
+confluence_html_to_markdown.py (and the other scripts downstream of this
+one) ask the same thing, so give them the same folder name when it's that
+space's turn to be converted.
+
+Also writes a README.md into the export folder itself (source site/space,
+who ran it, the date, and page/attachment counts) - handy if this export
+ever leaves your machine without this script alongside it, e.g. uploaded
+as its own repo for a teammate.
 """
 
 import base64
+import datetime
 import getpass
 import json
 import os
@@ -84,6 +98,27 @@ SPACE_KEY = os.environ.get("CONFLUENCE_SPACE_KEY") or input_with_help(
     ],
 ).strip()
 
+# Asked every run, same as everything above, so pulling a second space (or
+# re-pulling the same one later) never silently overwrites an export you
+# already have - give each one its own folder name, e.g.
+# confluence_export_TEAM and confluence_export_personal. Leave blank for
+# the plain default. Set CONFLUENCE_EXPORT_DIR for unattended runs.
+# confluence_html_to_markdown.py (and the other scripts downstream of this
+# one) ask the same thing, so give them the same folder name when it's
+# that space's turn to be converted.
+_suggested_output_dir = f"confluence_export_{SPACE_KEY}" if SPACE_KEY else "confluence_export"
+OUTPUT_DIR = os.environ.get("CONFLUENCE_EXPORT_DIR") or input_with_help(
+    f"Export folder name (blank for '{_suggested_output_dir}'): ",
+    [
+        "Where everything gets saved on your computer, relative to",
+        "wherever you run this script from. Worth naming per space (e.g.",
+        "confluence_export_TEAM) if you're going to extract more than",
+        "one, so a second extraction doesn't land in the same folder as",
+        "the first.",
+        f"Leave blank for: {_suggested_output_dir}",
+    ],
+).strip() or _suggested_output_dir
+
 # env vars for unattended runs, otherwise prompts
 USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input_with_help(
     "Confluence username: ",
@@ -125,7 +160,6 @@ PAGE_ID = os.environ.get("CONFLUENCE_PAGE_ID") or input_with_help(
 INTERNAL_CA_PATH = None   # e.g. r"C:\certs\company-root-ca.pem"
 VERIFY_SSL = True
 
-OUTPUT_DIR = "confluence_export"
 PAGE_SIZE = 25   # seemed like a safe default, never bothered tuning it
 REQUEST_DELAY_SECONDS = 0.3   # be a polite citizen
 
@@ -469,6 +503,54 @@ def main():
         print(f"Failure details saved to {failures_path}")
 
     print(f"\nManifest saved to {manifest_path}")
+
+    # A plain-English README saved alongside the export itself - handy if
+    # this folder ever leaves your machine (e.g. uploaded as its own repo
+    # for a teammate), so where it came from and what's in it doesn't
+    # depend on anyone remembering or still having this script around.
+    total_attachments = sum(len(p.get("attachments", [])) for p in manifest)
+    source_description = f"space '{SPACE_KEY}'" if SPACE_KEY else f"page id {PAGE_ID}"
+    readme_lines = [
+        "# Confluence export",
+        "",
+        f"- Source: {BASE_URL} ({source_description})",
+        f"- Extracted by: {getpass.getuser()}",
+        f"- Extracted on: {datetime.date.today().isoformat()}",
+        f"- Pages: {len(manifest)}",
+        f"- Attachments: {total_attachments}",
+    ]
+    if failures:
+        readme_lines.append(f"- Pages that failed to extract: {len(failures)} (see failures.json)")
+    readme_lines += [
+        "",
+        "## Why Markdown?",
+        "",
+        "This gets converted to Markdown rather than kept as Confluence's",
+        "raw HTML (next step below) because plain text outlives any one",
+        "platform - no login wall, no proprietary format, readable by a",
+        "person, a diff tool, or an AI model with no conversion step",
+        "first. As more of how we search, summarise, and work with",
+        "documentation runs through AI tools, content that's already",
+        "plain structured text is simply easier for those tools to use",
+        "well - we're building for where that's heading, not just",
+        "archiving where Confluence is leaving off.",
+        "",
+        "## Next step",
+        "",
+        "To convert this into Markdown, run confluence_html_to_markdown.py",
+        f"(or .ps1) and give it '{OUTPUT_DIR}' as the export folder to",
+        "convert when asked.",
+    ]
+    readme_path = os.path.join(OUTPUT_DIR, "README.md")
+    try:
+        with open(readme_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(readme_lines) + "\n")
+        print(f"Wrote {readme_path}")
+    except Exception as e:
+        # Not worth stopping over - everything else has already been
+        # saved, this is just a convenience summary.
+        print(f"Couldn't write {readme_path} - {e}")
+
     print("Next step: convert content.html files to Markdown.")
 
 

@@ -14,6 +14,12 @@ once via a CSV (see load_or_create_classification below). Pure local file
 processing, doesn't touch Confluence.
 
     python confluence_html_to_markdown.py
+
+Asks which export folder to convert and where to put the Markdown,
+defaulting to confluence_export / confluence_markdown_export - give it
+the same export folder name you gave confluence_extractor for whichever
+space you're converting. Set CONFLUENCE_EXPORT_DIR and
+CONFLUENCE_MARKDOWN_EXPORT_DIR to fix both in advance for unattended runs.
 """
 
 import csv
@@ -24,6 +30,9 @@ import re
 import shutil
 import xml.etree.ElementTree as ET
 
+# EXPORT_DIR / MARKDOWN_EXPORT_DIR / CLASSIFICATION_PATH are set at the top
+# of main() instead of here, since which export to convert is asked at
+# runtime rather than hardcoded - see the comment there.
 EXPORT_DIR = "confluence_export"
 MARKDOWN_EXPORT_DIR = "confluence_markdown_export"
 CLASSIFICATION_PATH = os.path.join(EXPORT_DIR, "page_destinations.csv")
@@ -558,6 +567,44 @@ def run_destination_check(bucket, destination_name, max_path_length, url_prompt,
 
 
 def main():
+    global EXPORT_DIR, MARKDOWN_EXPORT_DIR, CLASSIFICATION_PATH
+
+    # Asked every run rather than hardcoded, so converting a second space's
+    # export (saved under its own folder name by confluence_extractor)
+    # just means answering this differently - give it the exact same name
+    # you gave the extractor for that space. Set CONFLUENCE_EXPORT_DIR for
+    # unattended runs.
+    EXPORT_DIR = os.environ.get("CONFLUENCE_EXPORT_DIR") or input_with_help(
+        "Export folder to convert (blank for 'confluence_export'): ",
+        [
+            "Which extraction to convert - the exact folder name you gave",
+            "(or accepted the default for) when running",
+            "confluence_extractor.py/.ps1 for this space.",
+            "Leave blank for: confluence_export",
+        ],
+    ).strip() or "confluence_export"
+
+    # Suggest a matching output folder name - confluence_export_TEAM
+    # becomes confluence_markdown_export_TEAM - so converting a second
+    # space's export lands in its own Markdown folder instead of merging
+    # into the first space's output.
+    if EXPORT_DIR == "confluence_export":
+        suggested_markdown_export_dir = "confluence_markdown_export"
+    elif EXPORT_DIR.startswith("confluence_export"):
+        suggested_markdown_export_dir = "confluence_markdown_export" + EXPORT_DIR[len("confluence_export"):]
+    else:
+        suggested_markdown_export_dir = f"confluence_markdown_export_{EXPORT_DIR}"
+
+    MARKDOWN_EXPORT_DIR = os.environ.get("CONFLUENCE_MARKDOWN_EXPORT_DIR") or input_with_help(
+        f"Markdown output folder (blank for '{suggested_markdown_export_dir}'): ",
+        [
+            "Where the converted Markdown should go.",
+            f"Leave blank for: {suggested_markdown_export_dir}",
+        ],
+    ).strip() or suggested_markdown_export_dir
+
+    CLASSIFICATION_PATH = os.path.join(EXPORT_DIR, "page_destinations.csv")
+
     manifest_path = os.path.join(EXPORT_DIR, "manifest.json")
 
     if not os.path.exists(manifest_path):
@@ -664,7 +711,7 @@ def main():
     print(f"  -> {destination_counts['sharepoint']} heading to SharePoint")
     if destination_counts["unsorted"] > 0:
         print(f"  -> {destination_counts['unsorted']} still UNSORTED, not classified in the CSV")
-        print("     These landed in confluence_markdown_export/unsorted/ for now.")
+        print(f"     These landed in {MARKDOWN_EXPORT_DIR}/unsorted/ for now.")
         print(f"     Go back to {CLASSIFICATION_PATH}, fill in the blanks, and re-run")
         print("     this script to move them into the right spot.")
     print(f"Output saved to: {MARKDOWN_EXPORT_DIR}/")

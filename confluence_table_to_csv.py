@@ -19,6 +19,12 @@ that first.
 
 Leave off the title/id and it'll just ask for it instead - no need to
 already know how command-line arguments work.
+
+Also asks which export folder this is for and where to put the CSV,
+defaulting to confluence_export / confluence_table_export - give it the
+same export folder name you gave confluence_extractor for whichever space
+this is. Set CONFLUENCE_EXPORT_DIR and CONFLUENCE_TABLE_EXPORT_DIR to fix
+both in advance for unattended runs.
 """
 
 import csv
@@ -28,6 +34,9 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
+# EXPORT_DIR / TABLE_EXPORT_DIR are set inside main() instead of here,
+# since which export to use is asked at runtime rather than hardcoded -
+# see the comment there.
 EXPORT_DIR = "confluence_export"
 TABLE_EXPORT_DIR = "confluence_table_export"
 
@@ -167,6 +176,40 @@ def main():
                     "means the id is 123456789. Either one works.",
                 ],
             ).strip()
+
+    global EXPORT_DIR, TABLE_EXPORT_DIR
+
+    # Asked every run rather than hardcoded, so pulling a table from a
+    # second space's export just means answering this differently - give
+    # it the exact same name you gave the extractor for that space. Set
+    # CONFLUENCE_EXPORT_DIR for unattended runs.
+    EXPORT_DIR = os.environ.get("CONFLUENCE_EXPORT_DIR") or input_with_help(
+        "Export folder (blank for 'confluence_export'): ",
+        [
+            "Which extraction this is for - the exact folder name you gave",
+            "(or accepted the default for) when running",
+            "confluence_extractor.py/.ps1 for this space.",
+            "Leave blank for: confluence_export",
+        ],
+    ).strip() or "confluence_export"
+
+    # Suggest a matching output folder name, same idea as the other
+    # scripts, so a second space's table CSV doesn't land in (and
+    # overwrite) the first one's.
+    if EXPORT_DIR == "confluence_export":
+        suggested_table_export_dir = "confluence_table_export"
+    elif EXPORT_DIR.startswith("confluence_export"):
+        suggested_table_export_dir = "confluence_table_export" + EXPORT_DIR[len("confluence_export"):]
+    else:
+        suggested_table_export_dir = f"confluence_table_export_{EXPORT_DIR}"
+
+    TABLE_EXPORT_DIR = os.environ.get("CONFLUENCE_TABLE_EXPORT_DIR") or input_with_help(
+        f"Output folder (blank for '{suggested_table_export_dir}'): ",
+        [
+            "Where the CSV should go.",
+            f"Leave blank for: {suggested_table_export_dir}",
+        ],
+    ).strip() or suggested_table_export_dir
 
     manifest_path = os.path.join(EXPORT_DIR, "manifest.json")
     if not os.path.exists(manifest_path):

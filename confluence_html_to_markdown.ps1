@@ -20,7 +20,11 @@ talks to Confluence.
 Run:
     .\confluence_html_to_markdown.ps1
 
-Optional: edit $exportDir / $markdownExportDir below if your folder names differ.
+Asks which export folder to convert and where to put the Markdown,
+defaulting to confluence_export / confluence_markdown_export - give it
+the same export folder name you gave confluence_extractor.ps1 for
+whichever space you're converting. Set CONFLUENCE_EXPORT_DIR and
+CONFLUENCE_MARKDOWN_EXPORT_DIR to fix both in advance for unattended runs.
 
 Get "Could not find a part of the path" partway through, even though
 folders are visibly being created? Already fixed - this was Windows
@@ -65,10 +69,38 @@ function Read-HostWithHelp {
     }
 }
 
-# Where confluence_extractor.ps1 saved everything (must match its
-# $OutputDir), and where this script's own output will go.
-$exportDir = "confluence_export"
-$markdownExportDir = "confluence_markdown_export"
+# Asked every run rather than hardcoded, so converting a second space's
+# export (saved under its own folder name by confluence_extractor.ps1)
+# just means answering this differently - give it the exact same name you
+# gave the extractor for that space. Set CONFLUENCE_EXPORT_DIR for
+# unattended runs.
+$exportDirHelp = @(
+    "Which extraction to convert - the exact folder name you gave (or",
+    "accepted the default for) when running confluence_extractor.ps1",
+    "for this space.",
+    "Leave blank for: confluence_export"
+)
+$exportDir = if ($env:CONFLUENCE_EXPORT_DIR) { $env:CONFLUENCE_EXPORT_DIR } else { (Read-HostWithHelp "Export folder to convert (blank for 'confluence_export')" $exportDirHelp).Trim() }
+if (-not $exportDir) { $exportDir = "confluence_export" }
+
+# Suggest a matching output folder name - confluence_export_TEAM becomes
+# confluence_markdown_export_TEAM - so converting a second space's export
+# lands in its own Markdown folder instead of merging into the first
+# space's output.
+$suggestedMarkdownExportDir = if ($exportDir -eq "confluence_export") {
+    "confluence_markdown_export"
+} elseif ($exportDir.StartsWith("confluence_export")) {
+    "confluence_markdown_export" + $exportDir.Substring("confluence_export".Length)
+} else {
+    "confluence_markdown_export_$exportDir"
+}
+$markdownExportDirHelp = @(
+    "Where the converted Markdown should go.",
+    "Leave blank for: $suggestedMarkdownExportDir"
+)
+$markdownExportDir = if ($env:CONFLUENCE_MARKDOWN_EXPORT_DIR) { $env:CONFLUENCE_MARKDOWN_EXPORT_DIR } else { (Read-HostWithHelp "Markdown output folder (blank for '$suggestedMarkdownExportDir')" $markdownExportDirHelp).Trim() }
+if (-not $markdownExportDir) { $markdownExportDir = $suggestedMarkdownExportDir }
+
 $classificationPath = Join-Path $exportDir "page_destinations.csv"
 
 $manifestPath = Join-Path $exportDir "manifest.json"
@@ -715,7 +747,7 @@ Write-Host "  -> $($destinationCounts.azure) heading to Azure DevOps Wiki"
 Write-Host "  -> $($destinationCounts.sharepoint) heading to SharePoint"
 if ($destinationCounts.unsorted -gt 0) {
     Write-Host "  -> $($destinationCounts.unsorted) still UNSORTED, not classified in the CSV"
-    Write-Host "     These landed in confluence_markdown_export\unsorted\ for now."
+    Write-Host "     These landed in $markdownExportDir\unsorted\ for now."
     Write-Host "     Go back to $classificationPath, fill in the blanks, and re-run"
     Write-Host "     this script to move them into the right spot."
 }

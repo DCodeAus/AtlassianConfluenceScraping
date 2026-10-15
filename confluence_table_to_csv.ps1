@@ -21,6 +21,12 @@ Run:
 Leave off the title/id and PowerShell will just ask for it instead - no
 need to already know how command-line arguments work.
 
+Also asks which export folder this is for and where to put the CSV,
+defaulting to confluence_export / confluence_table_export - give it the
+same export folder name you gave confluence_extractor.ps1 for whichever
+space this is. Set CONFLUENCE_EXPORT_DIR and CONFLUENCE_TABLE_EXPORT_DIR
+to fix both in advance for unattended runs.
+
 Supported by Daniel - raise issues with him.
 #>
 
@@ -62,8 +68,35 @@ while (-not $PageQuery) {
     $PageQuery = (Read-HostWithHelp "Which page? (title or id)" $pageQueryHelp).Trim()
 }
 
-$exportDir = "confluence_export"
-$tableExportDir = "confluence_table_export"
+# Asked every run rather than hardcoded, so pulling a table from a second
+# space's export just means answering this differently - give it the
+# exact same name you gave the extractor for that space. Set
+# CONFLUENCE_EXPORT_DIR for unattended runs.
+$exportDirHelp = @(
+    "Which extraction this is for - the exact folder name you gave (or",
+    "accepted the default for) when running confluence_extractor.ps1",
+    "for this space.",
+    "Leave blank for: confluence_export"
+)
+$exportDir = if ($env:CONFLUENCE_EXPORT_DIR) { $env:CONFLUENCE_EXPORT_DIR } else { (Read-HostWithHelp "Export folder (blank for 'confluence_export')" $exportDirHelp).Trim() }
+if (-not $exportDir) { $exportDir = "confluence_export" }
+
+# Suggest a matching output folder name, same idea as the other scripts,
+# so a second space's table CSV doesn't land in (and overwrite) the first
+# one's.
+$suggestedTableExportDir = if ($exportDir -eq "confluence_export") {
+    "confluence_table_export"
+} elseif ($exportDir.StartsWith("confluence_export")) {
+    "confluence_table_export" + $exportDir.Substring("confluence_export".Length)
+} else {
+    "confluence_table_export_$exportDir"
+}
+$tableExportDirHelp = @(
+    "Where the CSV should go.",
+    "Leave blank for: $suggestedTableExportDir"
+)
+$tableExportDir = if ($env:CONFLUENCE_TABLE_EXPORT_DIR) { $env:CONFLUENCE_TABLE_EXPORT_DIR } else { (Read-HostWithHelp "Output folder (blank for '$suggestedTableExportDir')" $tableExportDirHelp).Trim() }
+if (-not $tableExportDir) { $tableExportDir = $suggestedTableExportDir }
 
 $namespaceDeclarations = @'
 xmlns:ac="http://www.atlassian.com/schema/confluence/4/ac/"

@@ -23,6 +23,12 @@ far enough to get pages classified in the CSV) before this one.
 Run:
     .\confluence_sharepoint_paste.ps1
 
+Asks which export folder this is for and where to put the paste-ready
+.html files, defaulting to confluence_export / confluence_sharepoint_paste
+- give it the same export folder name you gave confluence_extractor.ps1
+for whichever space this is. Set CONFLUENCE_EXPORT_DIR and
+CONFLUENCE_PASTE_EXPORT_DIR to fix both in advance for unattended runs.
+
 Get "Could not find a part of the path" partway through, even though
 folders are visibly being created? Already fixed - this was Windows
 PowerShell 5.1 specifically: "cd" moves PowerShell's own idea of where
@@ -47,8 +53,52 @@ Supported by Daniel - raise issues with him.
 
 Add-Type -AssemblyName System.Xml.Linq
 
-$exportDir = "confluence_export"
-$pasteExportDir = "confluence_sharepoint_paste"
+function Read-HostWithHelp {
+    # Like Read-Host, but typing a bare "?" prints an explanation of what's
+    # being asked for instead of being treated as the actual answer, then
+    # asks again.
+    param([string]$Prompt, [string[]]$HelpText)
+    while ($true) {
+        $answer = Read-Host $Prompt
+        if ($answer -ne "?") {
+            return $answer
+        }
+        foreach ($line in $HelpText) {
+            Write-Host $line
+        }
+    }
+}
+
+# Asked every run rather than hardcoded, so pasting a second space's
+# export just means answering this differently - give it the exact same
+# name you gave the extractor for that space. Set CONFLUENCE_EXPORT_DIR
+# for unattended runs.
+$exportDirHelp = @(
+    "Which extraction this is for - the exact folder name you gave (or",
+    "accepted the default for) when running confluence_extractor.ps1",
+    "for this space.",
+    "Leave blank for: confluence_export"
+)
+$exportDir = if ($env:CONFLUENCE_EXPORT_DIR) { $env:CONFLUENCE_EXPORT_DIR } else { (Read-HostWithHelp "Export folder (blank for 'confluence_export')" $exportDirHelp).Trim() }
+if (-not $exportDir) { $exportDir = "confluence_export" }
+
+# Suggest a matching output folder name, same idea as
+# confluence_html_to_markdown.ps1, so a second space's paste-ready HTML
+# doesn't land in (and overwrite) the first one's.
+$suggestedPasteExportDir = if ($exportDir -eq "confluence_export") {
+    "confluence_sharepoint_paste"
+} elseif ($exportDir.StartsWith("confluence_export")) {
+    "confluence_sharepoint_paste" + $exportDir.Substring("confluence_export".Length)
+} else {
+    "confluence_sharepoint_paste_$exportDir"
+}
+$pasteExportDirHelp = @(
+    "Where the paste-ready .html files should go.",
+    "Leave blank for: $suggestedPasteExportDir"
+)
+$pasteExportDir = if ($env:CONFLUENCE_PASTE_EXPORT_DIR) { $env:CONFLUENCE_PASTE_EXPORT_DIR } else { (Read-HostWithHelp "Output folder (blank for '$suggestedPasteExportDir')" $pasteExportDirHelp).Trim() }
+if (-not $pasteExportDir) { $pasteExportDir = $suggestedPasteExportDir }
+
 $classificationPath = Join-Path $exportDir "page_destinations.csv"
 
 $manifestPath = Join-Path $exportDir "manifest.json"

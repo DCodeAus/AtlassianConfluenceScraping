@@ -130,13 +130,15 @@ Once the auth test passes, run the matching extractor (`confluence_extractor.py`
 
 A brief network blip won't even show up as a failure, connection errors and 5xx responses get retried a couple of times with a short backoff before giving up. If a page still fails after that (odd permissions, a persistent error), it won't kill the whole run, that page just gets logged to `failures.json` at the end so you can look at it separately.
 
-Everything lands in a `confluence_export` folder, one subfolder per page, each with its own `content.html` and `images/`.
+Everything lands in a `confluence_export` folder (it'll ask - see below), one subfolder per page, each with its own `content.html` and `images/`. It also writes a `README.md` right into that folder, recording where it came from, who ran it, the date, and how many pages/attachments ended up there - handy if this export folder ever leaves your machine (e.g. uploaded as its own repo for a teammate), since then it doesn't depend on anyone remembering, or still having this script around.
 
 Only want one page instead of a whole space, say someone's personal space? Alongside the username/password prompts, it'll also ask for a page ID - leave it blank to pull the whole space as normal, or paste one in (grabbed straight from the page's URL, `.../pages/123456789/Page+Title`) to pull just that page instead. `SPACE_KEY` is ignored when you give it a page ID. Needs no more access than opening the page normally does. For unattended runs, set `CONFLUENCE_PAGE_ID` as an environment variable to skip the prompt, same as the credentials.
 
+**Extracting more than one space** (your own team space, then a personal one, say)? It asks what to name the export folder every run, defaulting to one based on the space key (e.g. `confluence_export_TEAM`) - just answer that prompt differently for each space and they'll never overwrite each other. `confluence_html_to_markdown.ps1`/`.py` and every other script downstream ask the same thing, so give them the matching folder name when it's that space's turn. Set `CONFLUENCE_EXPORT_DIR` as an environment variable to fix it in advance for unattended runs.
+
 ## Turning it into Markdown
 
-Once you've got a `confluence_export` folder full of pages, run:
+Once you've got a `confluence_export` folder full of pages, run (it'll ask which export folder to convert and where to put the Markdown - give it the same folder name you gave the extractor for this space):
 
 ```
 .\confluence_html_to_markdown.ps1
