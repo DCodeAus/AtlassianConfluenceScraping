@@ -2,7 +2,7 @@
 Step 1: Test Confluence Server/Data Center REST API access.
 Native PowerShell version, no Python required.
 
-Fill in the four values below, then run:
+Run it, it'll ask for your Confluence site address, space key, and login:
     .\confluence_auth_test.ps1
 
 If PowerShell blocks it with a "running scripts is disabled" error, see the
@@ -23,6 +23,13 @@ run - if you're still seeing 407, the proxy itself needs something this
 script can't provide (a different login, or isn't using your Windows
 account at all), and that needs sorting out with whoever manages your
 network.
+
+Asks for your Confluence site address and space key every time it runs,
+rather than having you edit them into the file - nothing identifying this
+script's real target ever needs to be typed into the file itself, so it's
+always safe to share or commit as-is. Set CONFLUENCE_BASE_URL and
+CONFLUENCE_SPACE_KEY as environment variables for unattended runs, same
+idea as the credentials below.
 
 Supported by Daniel - raise issues with him.
 #>
@@ -50,26 +57,6 @@ $proxy = [System.Net.WebRequest]::GetSystemWebProxy()
 $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
 [System.Net.WebRequest]::DefaultWebProxy = $proxy
 
-# --- Fill these in ---
-# $BaseUrl is the address of your Confluence site, with nothing after it
-# (no trailing slash, and no /wiki or /pages on the end).
-$BaseUrl  = "https://confluence.yourcompany.com"   # no trailing slash
-# $SpaceKey is the short code for the specific space you want to read.
-# You can find it in the URL when you're browsing Confluence in your
-# browser - it's the part right after /display/ or /spaces/, depending
-# on which URL style your Confluence uses:
-#   .../display/ABC/Page+Title              -> space key is "ABC"
-#   .../spaces/ABC/pages/123456789/Page+Title -> space key is "ABC"
-$SpaceKey = "ABC"                                    # find in the page URL, see above
-# ---------------------
-
-# Username and password are asked for at runtime rather than hardcoded,
-# so this file is safe to share without exposing credentials. If you're
-# automating this (e.g. a scheduled job), set CONFLUENCE_USERNAME and
-# CONFLUENCE_PASSWORD as environment variables instead and the prompts
-# below are skipped. None of this section runs at all with
-# -UseDefaultCredentials, since there's no separate login to ask for.
-
 function Read-HostWithHelp {
     # Like Read-Host, but typing a bare "?" prints an explanation of what's
     # being asked for instead of being treated as the actual answer, then
@@ -86,6 +73,36 @@ function Read-HostWithHelp {
         }
     }
 }
+
+# Asked every run rather than hardcoded, so there's nothing identifying
+# your Confluence instance sitting in this file to accidentally commit or
+# share. Set CONFLUENCE_BASE_URL for unattended runs, same idea as the
+# credentials further down.
+$baseUrlHelp = @(
+    "The address of your Confluence site - no trailing slash, and nothing",
+    "after the domain (not /wiki, not a page path, just the base site).",
+    "Copy it from your browser's address bar while viewing any Confluence",
+    "page, keeping only the part before /display/ or /spaces/, e.g.",
+    "https://confluence.yourcompany.com"
+)
+$BaseUrl = if ($env:CONFLUENCE_BASE_URL) { $env:CONFLUENCE_BASE_URL } else { (Read-HostWithHelp "Confluence base URL" $baseUrlHelp).Trim() }
+
+# Set CONFLUENCE_SPACE_KEY for unattended runs.
+$spaceKeyHelp = @(
+    "The short code for the specific space you want to read. Find it in",
+    "a page's URL while browsing Confluence, right after /display/ or",
+    "/spaces/ depending on which URL style your Confluence uses:",
+    "  .../display/ABC/Page+Title                -> space key is 'ABC'",
+    "  .../spaces/ABC/pages/123456789/Page+Title  -> space key is 'ABC'"
+)
+$SpaceKey = if ($env:CONFLUENCE_SPACE_KEY) { $env:CONFLUENCE_SPACE_KEY } else { (Read-HostWithHelp "Confluence space key" $spaceKeyHelp).Trim() }
+
+# Username and password are asked for at runtime rather than hardcoded,
+# so this file is safe to share without exposing credentials. If you're
+# automating this (e.g. a scheduled job), set CONFLUENCE_USERNAME and
+# CONFLUENCE_PASSWORD as environment variables instead and the prompts
+# below are skipped. None of this section runs at all with
+# -UseDefaultCredentials, since there's no separate login to ask for.
 
 if ($UseDefaultCredentials) {
     Write-Host "Using your current Windows login instead of a separate username/password."

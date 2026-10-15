@@ -4,6 +4,13 @@ bothering with the full extractor. Stdlib only, nothing to install.
 
     python confluence_auth_test.py
 
+Asks for your Confluence site address, space key, and login every time it
+runs, rather than having you edit them into the file - nothing identifying
+this script's real target ever needs to be typed into the file itself, so
+it's always safe to share or commit as-is. Set CONFLUENCE_BASE_URL and
+CONFLUENCE_SPACE_KEY as environment variables for unattended runs, same
+idea as the credentials below.
+
 Prints a page title on success. 401/403? Read the except block below.
 """
 
@@ -16,14 +23,6 @@ import urllib.request
 import urllib.parse
 import urllib.error
 
-# --- fill these in ---
-BASE_URL = "https://confluence.yourcompany.com"   # no trailing slash
-# SPACE_KEY is the short code for the space you want to read - find it in
-# a page's URL while browsing Confluence, right after /display/ or
-# /spaces/ depending on which URL style your Confluence uses:
-#   .../display/ABC/Page+Title                -> space key is "ABC"
-#   .../spaces/ABC/pages/123456789/Page+Title  -> space key is "ABC"
-SPACE_KEY = "ABC"
 
 def input_with_help(prompt, help_lines):
     """Like input(), but typing a bare "?" prints an explanation of what's
@@ -49,6 +48,29 @@ def getpass_with_help(prompt, help_lines):
         for line in help_lines:
             print(line)
 
+
+# Set CONFLUENCE_BASE_URL as an env var for unattended runs (cron etc),
+# otherwise it just prompts.
+BASE_URL = os.environ.get("CONFLUENCE_BASE_URL") or input_with_help(
+    "Confluence base URL: ",
+    [
+        "The address of your Confluence site - no trailing slash, and",
+        "nothing after the domain (not /wiki, not a page path, just the",
+        "base site). Copy it from your browser's address bar while",
+        "viewing any Confluence page, keeping only the part before",
+        "/display/ or /spaces/, e.g. https://confluence.yourcompany.com",
+    ],
+).strip()
+SPACE_KEY = os.environ.get("CONFLUENCE_SPACE_KEY") or input_with_help(
+    "Confluence space key: ",
+    [
+        "The short code for the specific space you want to read. Find it",
+        "in a page's URL while browsing Confluence, right after /display/",
+        "or /spaces/ depending on which URL style your Confluence uses:",
+        "  .../display/ABC/Page+Title                -> space key is 'ABC'",
+        "  .../spaces/ABC/pages/123456789/Page+Title  -> space key is 'ABC'",
+    ],
+).strip()
 
 # Set CONFLUENCE_USERNAME / CONFLUENCE_PASSWORD as env vars for unattended
 # runs (cron etc), otherwise it just prompts.

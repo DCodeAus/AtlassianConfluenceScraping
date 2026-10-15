@@ -27,7 +27,12 @@ script can't provide (a different login, or isn't using your Windows
 account at all), and that needs sorting out with whoever manages your
 network.
 
-DO NOT commit this file with real values filled in. See README.md.
+Asks for your Confluence site address and space key every time it runs,
+rather than having you edit them into the file - nothing identifying this
+script's real target ever needs to be typed into the file itself, so it's
+always safe to share or commit as-is. Set CONFLUENCE_BASE_URL and
+CONFLUENCE_SPACE_KEY as environment variables for unattended runs, same
+idea as the credentials below.
 
 Supported by Daniel - raise issues with him.
 #>
@@ -55,19 +60,52 @@ $proxy = [System.Net.WebRequest]::GetSystemWebProxy()
 $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
 [System.Net.WebRequest]::DefaultWebProxy = $proxy
 
-# --- Fill these in ---
-# The address of your Confluence site. No trailing slash, and nothing
-# after the domain (not /wiki, not a page path, just the base site).
-$BaseUrl = "https://confluence.yourcompany.com"   # no trailing slash
-# The short code identifying which space to pull pages from. Only used if
-# you leave the "page ID" prompt blank when the script asks (see below) -
-# ignored if you're pulling just one specific page. Find it in a page's
-# URL while browsing Confluence, right after /display/ or /spaces/
-# depending on which URL style your Confluence uses:
-#   .../display/ABC/Page+Title                -> space key is "ABC"
-#   .../spaces/ABC/pages/123456789/Page+Title  -> space key is "ABC"
-$SpaceKey = "ABC"   # used unless you enter a page ID below
+function Read-HostWithHelp {
+    # Like Read-Host, but typing a bare "?" prints an explanation of what's
+    # being asked for instead of being treated as the actual answer, then
+    # asks again - so someone new to this doesn't have to already know what
+    # to type before they can find out.
+    param([string]$Prompt, [string[]]$HelpText)
+    while ($true) {
+        $answer = Read-Host $Prompt
+        if ($answer -ne "?") {
+            return $answer
+        }
+        foreach ($line in $HelpText) {
+            Write-Host $line
+        }
+    }
+}
 
+# Asked every run rather than hardcoded, so there's nothing identifying
+# your Confluence instance sitting in this file to accidentally commit or
+# share. Set CONFLUENCE_BASE_URL for unattended runs, same idea as the
+# credentials further down.
+$baseUrlHelp = @(
+    "The address of your Confluence site - no trailing slash, and nothing",
+    "after the domain (not /wiki, not a page path, just the base site).",
+    "Copy it from your browser's address bar while viewing any Confluence",
+    "page, keeping only the part before /display/ or /spaces/, e.g.",
+    "https://confluence.yourcompany.com"
+)
+$BaseUrl = if ($env:CONFLUENCE_BASE_URL) { $env:CONFLUENCE_BASE_URL } else { (Read-HostWithHelp "Confluence base URL" $baseUrlHelp).Trim() }
+
+# Same idea - only actually used if you leave the "page ID" prompt blank
+# further down (ignored if you're pulling just one specific page), but
+# asked up front either way so it's never silently assumed. Set
+# CONFLUENCE_SPACE_KEY for unattended runs.
+$spaceKeyHelp = @(
+    "The short code identifying which space to pull pages from. Find it",
+    "in a page's URL while browsing Confluence, right after /display/ or",
+    "/spaces/ depending on which URL style your Confluence uses:",
+    "  .../display/ABC/Page+Title                -> space key is 'ABC'",
+    "  .../spaces/ABC/pages/123456789/Page+Title  -> space key is 'ABC'",
+    "Leave this blank if you're going to enter a page ID instead when",
+    "asked next."
+)
+$SpaceKey = if ($env:CONFLUENCE_SPACE_KEY) { $env:CONFLUENCE_SPACE_KEY } else { (Read-HostWithHelp "Confluence space key (leave blank if you'll give a page ID instead)" $spaceKeyHelp).Trim() }
+
+# --- Fill these in ---
 # Where everything gets saved on your computer, relative to wherever you
 # run this script from.
 $OutputDir = "confluence_export"
@@ -86,23 +124,6 @@ $RequestDelaySeconds = 0.3
 # automating this (e.g. a scheduled job), set CONFLUENCE_USERNAME and
 # CONFLUENCE_PASSWORD as environment variables instead and the prompts
 # below are skipped.
-
-function Read-HostWithHelp {
-    # Like Read-Host, but typing a bare "?" prints an explanation of what's
-    # being asked for instead of being treated as the actual answer, then
-    # asks again - so someone new to this doesn't have to already know what
-    # to type before they can find out.
-    param([string]$Prompt, [string[]]$HelpText)
-    while ($true) {
-        $answer = Read-Host $Prompt
-        if ($answer -ne "?") {
-            return $answer
-        }
-        foreach ($line in $HelpText) {
-            Write-Host $line
-        }
-    }
-}
 
 if ($UseDefaultCredentials) {
     Write-Host "Using your current Windows login instead of a separate username/password."
@@ -154,12 +175,15 @@ else {
 # URL, e.g. .../pages/123456789/Page+Title) to pull just that one page -
 # handy for a personal space or a one-off. Set CONFLUENCE_PAGE_ID for
 # unattended runs. Needs no more access than opening the page normally does.
+# If the space key was left blank just now (on the assumption a page ID
+# is coming instead), say so plainly here rather than showing an empty
+# "''" in the message below.
+$spaceDescription = if ($SpaceKey) { "the '$SpaceKey' space you just entered" } else { "a space (you left the space key blank)" }
 $pageIdHelp = @(
-    "Leave this blank to pull every page in the '$SpaceKey' space (set",
-    "near the top of this script). To pull just ONE page instead, open",
-    "that page in Confluence and look at the URL - it's the number right",
-    "after /pages/, e.g. .../pages/123456789/Page+Title means the Page ID",
-    "is 123456789."
+    "Leave this blank to pull every page in $spaceDescription.",
+    "To pull just ONE page instead, open that page in Confluence and",
+    "look at the URL - it's the number right after /pages/, e.g.",
+    ".../pages/123456789/Page+Title means the Page ID is 123456789."
 )
 $PageId = if ($env:CONFLUENCE_PAGE_ID) { $env:CONFLUENCE_PAGE_ID } else { (Read-HostWithHelp "Page ID to extract (leave blank for the whole space)" $pageIdHelp).Trim() }
 

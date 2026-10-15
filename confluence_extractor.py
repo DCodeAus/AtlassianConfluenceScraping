@@ -7,8 +7,12 @@ ready for the Markdown conversion step next.
 
     python confluence_extractor.py
 
-Don't commit this with real creds filled in - see README.md for the
-env-var approach.
+Asks for your Confluence site address and space key every time it runs,
+rather than having you edit them into the file - nothing identifying this
+script's real target ever needs to be typed into the file itself, so it's
+always safe to share or commit as-is. Set CONFLUENCE_BASE_URL and
+CONFLUENCE_SPACE_KEY as environment variables for unattended runs, same
+idea as the credentials below.
 """
 
 import base64
@@ -22,16 +26,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-
-# fill these in - see confluence_auth_test.py if you hit an SSL cert error
-BASE_URL = "https://confluence.yourcompany.com"   # no trailing slash
-# Only used if you leave the "page ID" prompt blank when the script asks
-# (see below) - ignored if you're pulling just one specific page. Find it
-# in a page's URL while browsing Confluence, right after /display/ or
-# /spaces/ depending on which URL style your Confluence uses:
-#   .../display/ABC/Page+Title                -> space key is "ABC"
-#   .../spaces/ABC/pages/123456789/Page+Title  -> space key is "ABC"
-SPACE_KEY = "ABC"
 
 
 def input_with_help(prompt, help_lines):
@@ -59,6 +53,37 @@ def getpass_with_help(prompt, help_lines):
             print(line)
 
 
+# Asked every run rather than hardcoded, so there's nothing identifying
+# your Confluence instance sitting in this file to accidentally commit or
+# share. Env vars for unattended runs, otherwise prompts.
+BASE_URL = os.environ.get("CONFLUENCE_BASE_URL") or input_with_help(
+    "Confluence base URL: ",
+    [
+        "The address of your Confluence site - no trailing slash, and",
+        "nothing after the domain (not /wiki, not a page path, just the",
+        "base site). Copy it from your browser's address bar while",
+        "viewing any Confluence page, keeping only the part before",
+        "/display/ or /spaces/, e.g. https://confluence.yourcompany.com",
+    ],
+).strip()
+
+# Only actually used if you leave the "page ID" prompt blank further down
+# (ignored if you're pulling just one specific page), but asked up front
+# either way so it's never silently assumed.
+SPACE_KEY = os.environ.get("CONFLUENCE_SPACE_KEY") or input_with_help(
+    "Confluence space key (leave blank if you'll give a page ID instead): ",
+    [
+        "The short code identifying which space to pull pages from. Find",
+        "it in a page's URL while browsing Confluence, right after",
+        "/display/ or /spaces/ depending on which URL style your",
+        "Confluence uses:",
+        "  .../display/ABC/Page+Title                -> space key is 'ABC'",
+        "  .../spaces/ABC/pages/123456789/Page+Title  -> space key is 'ABC'",
+        "Leave this blank if you're going to enter a page ID instead when",
+        "asked next.",
+    ],
+).strip()
+
 # env vars for unattended runs, otherwise prompts
 USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input_with_help(
     "Confluence username: ",
@@ -83,14 +108,17 @@ PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass_with_help(
 # URL, e.g. .../pages/123456789/Page+Title) to pull just that one page -
 # handy for a personal space or a one-off. Set CONFLUENCE_PAGE_ID for
 # unattended runs. Needs no more access than opening the page normally does.
+# If the space key was left blank just now (on the assumption a page ID
+# is coming instead), say so plainly here rather than showing an empty
+# "''" in the message below.
+_space_description = f"the '{SPACE_KEY}' space you just entered" if SPACE_KEY else "a space (you left the space key blank)"
 PAGE_ID = os.environ.get("CONFLUENCE_PAGE_ID") or input_with_help(
     "Page ID to extract (leave blank for the whole space): ",
     [
-        f"Leave this blank to pull every page in the '{SPACE_KEY}' space (set",
-        "near the top of this script). To pull just ONE page instead, open",
-        "that page in Confluence and look at the URL - it's the number right",
-        "after /pages/, e.g. .../pages/123456789/Page+Title means the Page ID",
-        "is 123456789.",
+        f"Leave this blank to pull every page in {_space_description}.",
+        "To pull just ONE page instead, open that page in Confluence and",
+        "look at the URL - it's the number right after /pages/, e.g.",
+        ".../pages/123456789/Page+Title means the Page ID is 123456789.",
     ],
 ).strip()
 

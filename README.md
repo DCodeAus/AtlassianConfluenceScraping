@@ -27,8 +27,8 @@ Want the picture before the detail? [HowThisWorks.md](HowThisWorks.md) has the w
 Just want the commands, in order, no explanation? Here they are - run each from inside this folder in PowerShell. See "Getting started" further down for what each one actually does, and "When something goes wrong" if anything doesn't behave like this says.
 
 ```powershell
-# 1. Open confluence_auth_test.ps1, fill in $BaseUrl and $SpaceKey near the
-#    top, save, then check you can actually connect:
+# 1. Run it, it'll ask for your Confluence site address and space key,
+#    then check you can actually connect:
 .\confluence_auth_test.ps1
 
 # 2. Only if you've got a confluence_export folder from BEFORE today, with
@@ -37,8 +37,7 @@ Just want the commands, in order, no explanation? Here they are - run each from 
 #    it silently finds nothing to fix:
 .\repair_garbled_text.ps1
 
-# 3. Fill in the same $BaseUrl/$SpaceKey in confluence_extractor.ps1, then
-#    pull every page down:
+# 3. Same site address/space key as step 1, then pull every page down:
 .\confluence_extractor.ps1
 
 # 4. Convert to Markdown. First run just creates page_destinations.csv -
@@ -60,16 +59,18 @@ Just want the commands, in order, no explanation? Here they are - run each from 
 
 ## Credentials, don't worry about them
 
-None of these scripts have a username or password sitting in the file. Run any of them and they'll just ask:
+None of these scripts have a username, password, or even your Confluence site address sitting in the file. `confluence_auth_test` and `confluence_extractor` ask for all of it every time they run:
 
 ```
+Confluence base URL: https://confluence.yourcompany.com
+Confluence space key: ABC
 Confluence username: dan.smith
 Confluence password: ****
 ```
 
-Python scripts hide the password using `getpass`, PowerShell scripts do the same with `Read-Host -AsSecureString`. Either way, nothing gets written to disk, logged anywhere, or shown on screen. That means you can hand this whole repo to someone else, or commit it, without worrying about leaking anything, there's nothing sensitive baked in to begin with.
+Python scripts hide the password using `getpass`, PowerShell scripts do the same with `Read-Host -AsSecureString`. Either way, nothing gets written to disk, logged anywhere, or shown on screen. That means you can hand this whole repo to someone else, or commit it, without worrying about leaking anything - there's nothing sensitive, or even identifying, baked in to begin with.
 
-If you ever want to automate this properly (a scheduled job, say) where being asked for a password every time isn't practical, set `CONFLUENCE_USERNAME` and `CONFLUENCE_PASSWORD` as environment variables before running the script and the prompts are skipped. Just don't ever go back to hardcoding it in the file.
+If you ever want to automate this properly (a scheduled job, say) where being asked everything every time isn't practical, set `CONFLUENCE_BASE_URL`, `CONFLUENCE_SPACE_KEY`, `CONFLUENCE_USERNAME`, and `CONFLUENCE_PASSWORD` as environment variables before running the script and the prompts are skipped. Just don't ever go back to hardcoding any of it in the file.
 
 If an older version of a script ever did have real credentials typed into it and pushed to Git, treat that password as burnt and change it. Deleting it from the file afterwards doesn't remove it from history.
 
@@ -238,11 +239,11 @@ New to this? Here's the order to actually run things in, start to finish. Everyt
 
 1. **Grab this repo**, somewhere you can find it again. Easiest way: on this repo's GitHub page, click the green **Code** button → **Download ZIP**, then unzip it. If you've got [Git](https://git-scm.com/downloads) installed and want to be able to pull future updates instead of re-downloading, `git clone` the repo's URL from that same **Code** button into a folder instead (see "Getting pages into Azure DevOps Wiki" below for a full walkthrough of installing/using git if you've never done it).
 
-2. **Test you can actually connect.** Open `confluence_auth_test.ps1` in a text editor, fill in `$BaseUrl` and `$SpaceKey` near the top (just your Confluence site address and space code, nothing sensitive), save, then run:
+2. **Test you can actually connect.** Run:
    ```
    .\confluence_auth_test.ps1
    ```
-   It'll ask for your username and password right there in the terminal - nothing gets saved anywhere. If it prints a page title back, you're good to move on. If it prints an error instead, check the "When something goes wrong" table below before going any further - no point discovering a login problem 200 pages into a real run.
+   It'll ask for your Confluence site address, space key, username and password right there in the terminal - nothing gets saved anywhere, and nothing needs editing into the file first. If it prints a page title back, you're good to move on. If it prints an error instead, check the "When something goes wrong" table below before going any further - no point discovering a login problem 200 pages into a real run.
 
 3. **Already extracted something with this project before, on an older copy of these scripts?** Check whether your `confluence_export` folder has weird garbled characters in it, e.g. `Â` where a space or accent should be, or `â€™` instead of an apostrophe. If it does, run this **from the same folder that contains your `confluence_export`/`confluence_markdown_export` folders** (it doesn't ask, it just looks for those two folder names right where you run it):
    ```
@@ -250,7 +251,7 @@ New to this? Here's the order to actually run things in, start to finish. Everyt
    ```
    The first thing it prints is exactly which folders it found (or didn't) - check that before anything else, since running it from the wrong spot just silently finds nothing to fix rather than erroring. If your export folders are somewhere else, pass the path directly instead: `.\repair_garbled_text.ps1 -Roots C:\path\to\confluence_export`. That's an old bug, already fixed for anything extracted from here on - if this is your first time running any of these scripts, skip this step entirely, you won't need it.
 
-4. **Pull everything down.** Fill in `$BaseUrl`/`$SpaceKey` in `confluence_extractor.ps1` too (same values as step 2), then run:
+4. **Pull everything down.** Same site address/space key as step 2 when it asks, then run:
    ```
    .\confluence_extractor.ps1
    ```
