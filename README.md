@@ -82,6 +82,8 @@ If an older version of a script ever did have real credentials typed into it and
 | `confluence_auth_test.ps1` | Same test, PowerShell version. No install needed, and it trusts whatever certs Windows already trusts, so it sidesteps SSL hassles the Python version can hit. |
 | `confluence_extractor.py` | The real extraction: walks every page in a space, saves the HTML, grabs every image, writes a manifest so the next step knows what's there. |
 | `confluence_extractor.ps1` | Same extractor, PowerShell version. Use this one if Python keeps tripping over the org's certificate. |
+| `confluence_verify_extraction.py` | Checks what actually got saved to disk against the extractor's own `manifest.json` - missing/empty `content.html`, missing attachments, anything in `failures.json`. Add `--check-live-space` to also compare against Confluence's own live page list, while it's still reachable. See "Checking an extraction is complete" below. |
+| `confluence_verify_extraction.ps1` | Same check, PowerShell version. |
 | `confluence_html_to_markdown.ps1` | Takes everything the extractor pulled and turns it into proper Markdown, images and all. Routes each page to Azure or SharePoint based on how you've classified it in a CSV, with a built-in check for each platform's file name limits. |
 | `confluence_html_to_markdown.py` | Same conversion and routing, Python standard library only. Use this one if you don't have PowerShell (e.g. extracted on Mac/Linux). |
 | `confluence_sharepoint_paste.ps1` | Turns each page classified "sharepoint" into a standalone .html file ready to copy-paste into a new SharePoint page. See "Getting pages into SharePoint" below. |
@@ -99,6 +101,28 @@ If an older version of a script ever did have real credentials typed into it and
 It logs in with your normal Confluence username and password, asks for one page from whichever space you point it at, and tells you straight away whether that worked. If it did, you're clear to run the real extractor. If you get a 401 or 403 or an SSL error, it'll tell you which and point at the fix, see Troubleshooting below.
 
 Worth running this before touching the full extractor, no point discovering an auth problem 200 pages into a 500-page run.
+
+## Checking an extraction is complete
+
+`confluence_verify_extraction.py` / `.ps1` checks what the extractor actually saved to disk against its own `manifest.json`: every page's folder and `content.html` exist and aren't empty, every attachment it recorded actually downloaded, and nothing's sitting in `failures.json`. Run it from the same folder as the extractor, or point it at your export directly:
+
+```
+python confluence_verify_extraction.py
+.\confluence_verify_extraction.ps1
+```
+
+It prints a summary either way and saves the full details to `verification_report.json` in your export folder. Clean run, nothing to do. Anything listed is worth a look before you treat the export as done.
+
+That only catches pages the extractor *tried and failed* on, though - it can't tell you about a page that never made it into the manifest at all (say, the extractor crashed before finishing, or a page got added to the space after you ran it). While Confluence is still reachable - **especially worth doing once, before it gets decommissioned**, since that's your last chance - add `--check-live-space` (`-CheckLiveSpace` for PowerShell) to also fetch the space's live page list from Confluence itself and compare:
+
+```
+python confluence_verify_extraction.py --check-live-space
+.\confluence_verify_extraction.ps1 -CheckLiveSpace
+```
+
+This asks for the same site address/space key/login as the extractor did (the PowerShell version also takes `-UseDefaultCredentials`, same as there). It flags live pages the manifest never recorded (genuinely missing - re-run the extractor, or just that one page by ID), and separately lists manifest pages no longer live (usually just deleted or moved since you extracted - not itself a problem).
+
+This is a coverage check, not a content check: it tells you something's missing or empty, not whether a table rendered nicely or an image is the right one. Still worth spot-checking a handful of pages by eye, especially ones with big tables or lots of attachments.
 
 ## Pulling everything down
 
