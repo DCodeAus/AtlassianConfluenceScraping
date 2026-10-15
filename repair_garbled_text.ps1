@@ -29,6 +29,13 @@ a safe-looking guess, not a guaranteed fix, which is why it's opt-in and
 requires both -Force AND typing "YOLO" when asked. Every file it strips
 gets logged, with a snippet and timestamp, to
 garbled_text_repair_log.json.
+
+Get "Could not find a part of the path" partway through, even though
+files are visibly being read? Already fixed - this was Windows
+PowerShell 5.1 specifically: "cd" moves PowerShell's own idea of where
+you are, but doesn't tell .NET's file-writing functions, which quietly
+keep using wherever the window first opened instead. Grab a fresh copy
+if you're still seeing this.
 #>
 
 # Which folders to scan. Defaults to both export folders if you don't
@@ -50,6 +57,18 @@ param(
     # just this script's own switch, not the built-in -Debug machinery.
     [switch]$Debug
 )
+
+# On Windows PowerShell 5.1, "cd"/Set-Location only moves PowerShell's OWN
+# idea of where you are - it does NOT tell .NET's file-reading/writing
+# functions (which this script uses directly, for reasons explained where
+# they're used), which silently keep using wherever this PowerShell window
+# first opened. Real, confirmed failure mode in a sibling script: folders/
+# files visibly show up in the right place (PowerShell cmdlets follow
+# you), but a .NET read or write then fails with "Could not find a part
+# of the path", because .NET is still looking somewhere else entirely.
+# This line keeps the two in sync, right from the start, regardless of
+# how this window was opened or what you "cd"'d through to get here.
+[System.Environment]::CurrentDirectory = (Get-Location).Path
 
 function Read-HostWithHelp {
     # Like Read-Host, but typing a bare "?" prints an explanation of what's

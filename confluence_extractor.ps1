@@ -34,6 +34,16 @@ always safe to share or commit as-is. Set CONFLUENCE_BASE_URL and
 CONFLUENCE_SPACE_KEY as environment variables for unattended runs, same
 idea as the credentials below.
 
+Get "Could not find a part of the path" partway through, on content.html
+or failures.json or manifest.json, even though folders are visibly being
+created? Fixed - this was Windows PowerShell 5.1 specifically: "cd"
+moves PowerShell's own idea of where you are, but doesn't tell .NET's
+file-writing functions, which quietly keep using wherever the window
+first opened instead. Folders got created in the right place (PowerShell
+cmdlets follow you), but every file write then looked for that folder in
+the wrong place (.NET didn't). Already fixed below - grab a fresh copy
+if you're still seeing this.
+
 Supported by Daniel - raise issues with him.
 #>
 
@@ -46,6 +56,18 @@ param(
     # switch) to check before committing to a full extraction.
     [switch]$UseDefaultCredentials
 )
+
+# On Windows PowerShell 5.1, "cd"/Set-Location only moves PowerShell's OWN
+# idea of where you are - it does NOT tell .NET's file-writing functions
+# (which this script uses directly, for reasons explained where they're
+# used), which silently keep using wherever this PowerShell window first
+# opened. Real, confirmed failure mode: folders visibly get created in
+# the right place (PowerShell cmdlets like New-Item follow you), but
+# every file write into them then fails with "Could not find a part of
+# the path", because .NET is still looking somewhere else entirely. This
+# line keeps the two in sync, right from the start, regardless of how
+# this window was opened or what you "cd"'d through to get here.
+[System.Environment]::CurrentDirectory = (Get-Location).Path
 
 # Tells .NET to offer your current Windows login to the proxy if it ever
 # asks for one. Some corporate networks require an authenticated proxy to
@@ -329,7 +351,12 @@ function Get-TruncatedFilename {
     }
     $extension = [System.IO.Path]::GetExtension($Name)
     $root = [System.IO.Path]::GetFileNameWithoutExtension($Name)
-    $root = $root.Substring(0, $MaxLength - $extension.Length)
+    # TrimEnd here matters most for an attachment with no extension at all
+    # (where this would otherwise end the whole filename in a trailing
+    # space or dot - Windows silently drops that when the file's actually
+    # created, but a later open/write using this same string wouldn't get
+    # that same treatment, so the two stop referring to the same file).
+    $root = $root.Substring(0, $MaxLength - $extension.Length).TrimEnd(' ', '.')
     return "$root$extension"
 }
 
@@ -567,9 +594,16 @@ foreach ($page in $pages) {
     $pageId = $page.id
     $title = $page.title
     $safeTitle = Get-SanitisedFilename $title
-    # Folder names can only be so long - trim an overly long title down
-    # to a sane length before it becomes part of a folder name below.
-    $shortTitle = if ($safeTitle.Length -gt 50) { $safeTitle.Substring(0, 50) } else { $safeTitle }
+    # Folder names can only be so long - trim an overly long title down to
+    # a sane length before it becomes part of a folder name below. Confirmed
+    # real bug: cutting at a fixed length can land right after a space in
+    # the original title, leaving a TRAILING space on the folder name.
+    # Windows silently drops a trailing space when the folder actually
+    # gets created, but a later write using this same (untrimmed) string
+    # doesn't get that same treatment - "Could not find a part of the
+    # path", because the two no longer refer to the same folder. Trimming
+    # again after cutting closes that gap.
+    $shortTitle = if ($safeTitle.Length -gt 50) { $safeTitle.Substring(0, 50).TrimEnd(' ', '.') } else { $safeTitle }
 
     Write-Host "[$index/$($pages.Count)] $title"
 
@@ -727,15 +761,24 @@ Set-Utf8NoBomContent -Path $manifestPath -Value (ConvertTo-Json -InputObject $ma
 Write-Host "`nDone. $($manifest.Count) pages extracted successfully."
 
 if ($failures.Count -gt 0) {
-    # Print a short summary of anything that failed, and also save the
-    # full details to failures.json so they can be looked at separately.
+    # Print a short summary of anything that failed - this always happens,
+    # regardless of whether saving the file below works, so the list below
+    # is never the only copy of this information.
     Write-Host "$($failures.Count) pages failed:"
     foreach ($fail in $failures) {
         Write-Host "  - $($fail.title) (id $($fail.id)): $($fail.error)"
     }
     $failuresPath = Join-Path $OutputDir "failures.json"
-    Set-Utf8NoBomContent -Path $failuresPath -Value (ConvertTo-Json -InputObject $failures -Depth 10)
-    Write-Host "Failure details saved to $failuresPath"
+    try {
+        Set-Utf8NoBomContent -Path $failuresPath -Value (ConvertTo-Json -InputObject $failures -Depth 10)
+        Write-Host "Failure details also saved to $failuresPath"
+    }
+    catch {
+        # Don't claim success if it didn't work - the summary printed
+        # above is still there either way, this is just the extra copy.
+        Write-Host "Couldn't save failure details to $failuresPath - $($_.Exception.Message)"
+        Write-Host "The summary above is still accurate, this just means there's no extra copy on disk."
+    }
 }
 
 Write-Host "`nManifest saved to $manifestPath"

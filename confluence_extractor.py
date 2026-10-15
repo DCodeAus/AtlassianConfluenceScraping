@@ -229,7 +229,12 @@ def truncate_filename(name, max_length=MAX_ATTACHMENT_FILENAME_LENGTH):
     if len(name) <= max_length:
         return name
     root, ext = os.path.splitext(name)
-    root = root[:max_length - len(ext)]
+    # rstrip here matters most for an attachment with no extension at all
+    # (where this would otherwise end the whole filename in a trailing
+    # space or dot - Windows silently drops that when the file's actually
+    # created, but a later open/write using this same string wouldn't get
+    # that same treatment, so the two stop referring to the same file).
+    root = root[:max_length - len(ext)].rstrip(' .')
     return root + ext
 
 def make_unique_filename(name, used_names):
@@ -342,6 +347,14 @@ def main():
         page_id = page["id"]
         title = page["title"]
         safe_title = sanitise_filename(title)
+        # Cutting a long title at a fixed length can land right after a
+        # space in the original title, leaving a TRAILING space on the
+        # folder name. The OS silently drops a trailing space when the
+        # folder actually gets created, but a later write using this same
+        # (untrimmed) string doesn't get that same treatment - "could not
+        # find" errors, because the two no longer refer to the same
+        # folder. Stripping again after cutting closes that gap.
+        short_title = safe_title[:50].rstrip(' .')
         print(f"[{index}/{len(pages)}] {title}")
 
         try:
@@ -350,7 +363,7 @@ def main():
             mentioned_user_keys.update(USERKEY_PATTERN.findall(html_body))
             mentioned_usernames.update(USERNAME_PATTERN.findall(html_body))
 
-            page_folder = os.path.join(pages_dir, f"{page_id}_{safe_title[:50]}")
+            page_folder = os.path.join(pages_dir, f"{page_id}_{short_title}")
             os.makedirs(page_folder, exist_ok=True)
 
             # Save raw HTML content

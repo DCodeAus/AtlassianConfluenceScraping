@@ -23,8 +23,27 @@ far enough to get pages classified in the CSV) before this one.
 Run:
     .\confluence_sharepoint_paste.ps1
 
+Get "Could not find a part of the path" partway through, even though
+folders are visibly being created? Already fixed - this was Windows
+PowerShell 5.1 specifically: "cd" moves PowerShell's own idea of where
+you are, but doesn't tell .NET's file-writing functions, which quietly
+keep using wherever the window first opened instead. Grab a fresh copy
+if you're still seeing this.
+
 Supported by Daniel - raise issues with him.
 #>
+
+# On Windows PowerShell 5.1, "cd"/Set-Location only moves PowerShell's OWN
+# idea of where you are - it does NOT tell .NET's file-writing functions
+# (which this script uses directly, for reasons explained where they're
+# used), which silently keep using wherever this PowerShell window first
+# opened. Real, confirmed failure mode: folders visibly get created in
+# the right place (PowerShell cmdlets like New-Item follow you), but
+# every file write into them then fails with "Could not find a part of
+# the path", because .NET is still looking somewhere else entirely. This
+# line keeps the two in sync, right from the start, regardless of how
+# this window was opened or what you "cd"'d through to get here.
+[System.Environment]::CurrentDirectory = (Get-Location).Path
 
 Add-Type -AssemblyName System.Xml.Linq
 
