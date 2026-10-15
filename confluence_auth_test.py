@@ -18,7 +18,12 @@ import urllib.error
 
 # --- fill these in ---
 BASE_URL = "https://confluence.yourcompany.com"   # no trailing slash
-SPACE_KEY = "ABC"                                   # it's in the page URL, /display/ABC/Page+Title
+# SPACE_KEY is the short code for the space you want to read - find it in
+# a page's URL while browsing Confluence, right after /display/ or
+# /spaces/ depending on which URL style your Confluence uses:
+#   .../display/ABC/Page+Title                -> space key is "ABC"
+#   .../spaces/ABC/pages/123456789/Page+Title  -> space key is "ABC"
+SPACE_KEY = "ABC"
 
 def input_with_help(prompt, help_lines):
     """Like input(), but typing a bare "?" prints an explanation of what's

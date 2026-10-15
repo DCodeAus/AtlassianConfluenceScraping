@@ -10,8 +10,25 @@ note at the very bottom of this file.
 
 If it prints a page title, you're good to move to the full extractor.
 
+Get a 401 error mentioning SSO? Some Confluence setups log you in via your
+Windows login automatically (Integrated Windows Authentication) rather than
+a separate username/password. Try again with:
+    .\confluence_auth_test.ps1 -UseDefaultCredentials
+That skips the username/password prompts entirely and uses your current
+Windows login instead.
+
 Supported by Daniel - raise issues with him.
 #>
+
+param(
+    # Pass this if your organisation logs you into things automatically via
+    # your Windows login rather than a separate Confluence username and
+    # password. Skips the prompts below entirely and uses your current
+    # Windows login instead. Not sure which applies to you? Just run this
+    # once without it first - if that fails with a 401 mentioning SSO,
+    # that's the sign to try this instead.
+    [switch]$UseDefaultCredentials
+)
 
 # --- Fill these in ---
 # $BaseUrl is the address of your Confluence site, with nothing after it
@@ -19,15 +36,19 @@ Supported by Daniel - raise issues with him.
 $BaseUrl  = "https://confluence.yourcompany.com"   # no trailing slash
 # $SpaceKey is the short code for the specific space you want to read.
 # You can find it in the URL when you're browsing Confluence in your
-# browser, e.g. .../display/ABC/Page+Title means the space key is "ABC".
-$SpaceKey = "ABC"                                    # find in the page URL, e.g. /display/ABC/Page+Title
+# browser - it's the part right after /display/ or /spaces/, depending
+# on which URL style your Confluence uses:
+#   .../display/ABC/Page+Title              -> space key is "ABC"
+#   .../spaces/ABC/pages/123456789/Page+Title -> space key is "ABC"
+$SpaceKey = "ABC"                                    # find in the page URL, see above
 # ---------------------
 
 # Username and password are asked for at runtime rather than hardcoded,
 # so this file is safe to share without exposing credentials. If you're
 # automating this (e.g. a scheduled job), set CONFLUENCE_USERNAME and
 # CONFLUENCE_PASSWORD as environment variables instead and the prompts
-# below are skipped.
+# below are skipped. None of this section runs at all with
+# -UseDefaultCredentials, since there's no separate login to ask for.
 
 function Read-HostWithHelp {
     # Like Read-Host, but typing a bare "?" prints an explanation of what's
@@ -46,74 +67,85 @@ function Read-HostWithHelp {
     }
 }
 
-$usernameHelp = @(
-    "This is the same username you use to log into Confluence in your",
-    "web browser - usually your email address or your company username.",
-    "If you're not sure, open Confluence in a browser first and check",
-    "what you log in with there."
-)
-
-# $env:CONFLUENCE_USERNAME checks whether that environment variable is
-# already set on this computer. If it is, use it. If not, ask the person
-# running the script to type their username, right here in the terminal.
-$Username = if ($env:CONFLUENCE_USERNAME) { $env:CONFLUENCE_USERNAME } else { Read-HostWithHelp "Confluence username" $usernameHelp }
-
-# Same idea for the password, but passwords need extra care so they don't
-# end up sitting in plain text in memory or on screen any longer than
-# necessary.
-if ($env:CONFLUENCE_PASSWORD) {
-    # An environment variable was already set (e.g. for an unattended
-    # run) - just use it directly, no prompt needed.
-    $Password = $env:CONFLUENCE_PASSWORD
-}
-else {
-    while ($true) {
-        # -AsSecureString means whatever's typed shows up as ***** on screen,
-        # and PowerShell keeps it scrambled in memory rather than as plain
-        # readable text - this is the "SecureString" object, not the actual
-        # password yet.
-        $SecurePassword = Read-Host "Confluence password" -AsSecureString
-        # To actually USE the password (e.g. to build a login header), it has
-        # to be unscrambled back into normal text for a moment. These next
-        # three lines do exactly that, as briefly as possible:
-        # 1. Get a temporary pointer to the unscrambled password in memory.
-        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
-        # 2. Read the actual password text from that pointer.
-        $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-        # 3. Immediately wipe that temporary unscrambled copy from memory -
-        #    don't leave a plain-text password sitting around any longer
-        #    than needed.
-        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
-
-        # Password input is masked, so typing "?" isn't visibly different
-        # from typing anything else - only found out here, after decoding.
-        if ($Password -ne "?") {
-            break
-        }
-        Write-Host "This is the same password you use to log into Confluence in your"
-        Write-Host "web browser. It's masked as you type (you won't see the characters"
-        Write-Host "appear) - that's normal, just type it and press Enter."
+if ($UseDefaultCredentials) {
+    Write-Host "Using your current Windows login instead of a separate username/password."
+    # No Authorization header needed here - -UseDefaultCredentials further
+    # down tells Invoke-RestMethod to negotiate using the Windows login
+    # directly, the same thing your browser does automatically.
+    $headers = @{
+        Accept = "application/json"
     }
 }
+else {
+    $usernameHelp = @(
+        "This is the same username you use to log into Confluence in your",
+        "web browser - usually your email address or your company username.",
+        "If you're not sure, open Confluence in a browser first and check",
+        "what you log in with there."
+    )
 
-# Confluence's API expects login credentials sent as "Basic Auth": your
-# username and password joined with a colon, then encoded (not
-# encrypted - just reformatted) into a block of text called Base64.
-# Build the Basic Auth header manually (same approach as the Python version)
-# Join "username:password" into one piece of text.
-$pair = "$($Username):$($Password)"
-# Turn that text into raw bytes (computers work with the API in bytes,
-# not directly in text).
-$bytes = [System.Text.Encoding]::UTF8.GetBytes($pair)
-# Encode those bytes as Base64 text - this is what actually gets sent.
-$encodedCredentials = [System.Convert]::ToBase64String($bytes)
+    # $env:CONFLUENCE_USERNAME checks whether that environment variable is
+    # already set on this computer. If it is, use it. If not, ask the person
+    # running the script to type their username, right here in the terminal.
+    $Username = if ($env:CONFLUENCE_USERNAME) { $env:CONFLUENCE_USERNAME } else { Read-HostWithHelp "Confluence username" $usernameHelp }
 
-# $headers is the extra information sent along with the request, telling
-# Confluence who's asking (Authorization) and what format we'd like the
-# answer in (Accept: JSON, a common data format).
-$headers = @{
-    Authorization = "Basic $encodedCredentials"
-    Accept        = "application/json"
+    # Same idea for the password, but passwords need extra care so they don't
+    # end up sitting in plain text in memory or on screen any longer than
+    # necessary.
+    if ($env:CONFLUENCE_PASSWORD) {
+        # An environment variable was already set (e.g. for an unattended
+        # run) - just use it directly, no prompt needed.
+        $Password = $env:CONFLUENCE_PASSWORD
+    }
+    else {
+        while ($true) {
+            # -AsSecureString means whatever's typed shows up as ***** on screen,
+            # and PowerShell keeps it scrambled in memory rather than as plain
+            # readable text - this is the "SecureString" object, not the actual
+            # password yet.
+            $SecurePassword = Read-Host "Confluence password" -AsSecureString
+            # To actually USE the password (e.g. to build a login header), it has
+            # to be unscrambled back into normal text for a moment. These next
+            # three lines do exactly that, as briefly as possible:
+            # 1. Get a temporary pointer to the unscrambled password in memory.
+            $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+            # 2. Read the actual password text from that pointer.
+            $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+            # 3. Immediately wipe that temporary unscrambled copy from memory -
+            #    don't leave a plain-text password sitting around any longer
+            #    than needed.
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+
+            # Password input is masked, so typing "?" isn't visibly different
+            # from typing anything else - only found out here, after decoding.
+            if ($Password -ne "?") {
+                break
+            }
+            Write-Host "This is the same password you use to log into Confluence in your"
+            Write-Host "web browser. It's masked as you type (you won't see the characters"
+            Write-Host "appear) - that's normal, just type it and press Enter."
+        }
+    }
+
+    # Confluence's API expects login credentials sent as "Basic Auth": your
+    # username and password joined with a colon, then encoded (not
+    # encrypted - just reformatted) into a block of text called Base64.
+    # Build the Basic Auth header manually (same approach as the Python version)
+    # Join "username:password" into one piece of text.
+    $pair = "$($Username):$($Password)"
+    # Turn that text into raw bytes (computers work with the API in bytes,
+    # not directly in text).
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($pair)
+    # Encode those bytes as Base64 text - this is what actually gets sent.
+    $encodedCredentials = [System.Convert]::ToBase64String($bytes)
+
+    # $headers is the extra information sent along with the request, telling
+    # Confluence who's asking (Authorization) and what format we'd like the
+    # answer in (Accept: JSON, a common data format).
+    $headers = @{
+        Authorization = "Basic $encodedCredentials"
+        Accept        = "application/json"
+    }
 }
 
 # Build the actual web address we're going to ask for: give me content
@@ -126,8 +158,16 @@ $uri = "$BaseUrl/rest/api/content?spaceKey=$SpaceKey&limit=1&expand=body.storage
 try {
     # Invoke-RestMethod actually sends the web request and waits for
     # Confluence to answer, then turns the JSON response into a regular
-    # PowerShell object we can read properties off of.
-    $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+    # PowerShell object we can read properties off of. -UseDefaultCredentials
+    # only gets added when that switch was actually passed - with no
+    # separate login to send, this negotiates using the current Windows
+    # login instead, the same thing a browser does automatically.
+    if ($UseDefaultCredentials) {
+        $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get -UseDefaultCredentials
+    }
+    else {
+        $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+    }
 
     # $response.results is the list of pages Confluence sent back - if
     # login worked and the space key is right, there should be exactly 1
@@ -151,10 +191,23 @@ catch {
 
     if ($statusCode -eq 401) {
         Write-Host "401 Unauthorized. Wrong username/password, OR your org requires SSO"
-        Write-Host "and has disabled basic auth for the API."
+        Write-Host "and has disabled basic auth for the API. Try again with"
+        Write-Host "-UseDefaultCredentials - see the top of this file."
     }
     elseif ($statusCode -eq 403) {
         Write-Host "403 Forbidden. Credentials are valid but you lack read access to this space."
+    }
+    elseif ($_.Exception.Message -like "*Unexpected character*parsing value*") {
+        # No useful HTTP status code here either - Invoke-RestMethod got a
+        # normal 200 OK back, so no HTTP-level error was thrown, but the
+        # body wasn't JSON at all (this is the exact error .NET's JSON
+        # parser gives for an unexpected character, almost always "<" -
+        # the start of an HTML page). That's the signature of basic auth
+        # silently being redirected to an HTML login/SSO page instead of
+        # being cleanly rejected - try -UseDefaultCredentials instead.
+        Write-Host "Got a response back, but it wasn't JSON - likely an HTML login or"
+        Write-Host "SSO page instead of real API content. Try again with"
+        Write-Host "-UseDefaultCredentials - see the top of this file."
     }
     elseif ($_.Exception.Message -like "*trust*" -or $_.Exception.Message -like "*SSL*" -or $_.Exception.Message -like "*certificate*") {
         # No HTTP status code at all here - the connection failed before

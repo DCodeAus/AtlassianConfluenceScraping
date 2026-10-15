@@ -25,7 +25,13 @@ import urllib.request
 
 # fill these in - see confluence_auth_test.py if you hit an SSL cert error
 BASE_URL = "https://confluence.yourcompany.com"   # no trailing slash
-SPACE_KEY = "ABC"   # used unless you enter a page ID below
+# Only used if you leave the "page ID" prompt blank when the script asks
+# (see below) - ignored if you're pulling just one specific page. Find it
+# in a page's URL while browsing Confluence, right after /display/ or
+# /spaces/ depending on which URL style your Confluence uses:
+#   .../display/ABC/Page+Title                -> space key is "ABC"
+#   .../spaces/ABC/pages/123456789/Page+Title  -> space key is "ABC"
+SPACE_KEY = "ABC"
 
 
 def input_with_help(prompt, help_lines):
