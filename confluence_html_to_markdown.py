@@ -6,7 +6,8 @@ content.html into content.md, and sorts pages into:
 
     confluence_markdown_export/azure/...
     confluence_markdown_export/sharepoint/...
-    confluence_markdown_export/unsorted/...
+    confluence_markdown_export/discard/...   (reviewed, not being kept anywhere)
+    confluence_markdown_export/unsorted/...  (blank, or not yet classified)
 
 Technical docs go to Azure DevOps Wiki, everything else to SharePoint - no
 way to tell those apart from the content itself, so you classify each page
@@ -20,6 +21,13 @@ defaulting to confluence_export / confluence_markdown_export - give it
 the same export folder name you gave confluence_extractor for whichever
 space you're converting. Set CONFLUENCE_EXPORT_DIR and
 CONFLUENCE_MARKDOWN_EXPORT_DIR to fix both in advance for unattended runs.
+
+WARNING: a blank destination is treated as "doesn't need migrating
+anywhere" (fine for a personal space you're just keeping locally) - it is
+NOT the same as "discard". Use "discard" for something you've actually
+looked at and decided not to keep at all; leave it blank only for
+genuinely not-yet-reviewed pages, or ones that were never going anywhere
+in the first place.
 """
 
 import csv
@@ -383,8 +391,9 @@ def write_classification_csv(rows, path):
 
 def load_or_create_classification(manifest):
     """Returns a dict of page id -> normalised destination ('azure',
-    'sharepoint', or '' for unclassified), or None if the caller should
-    stop (template just created, or new rows were just added)."""
+    'sharepoint', 'discard', or '' for unclassified), or None if the
+    caller should stop (template just created, or new rows were just
+    added)."""
     if not os.path.exists(CLASSIFICATION_PATH):
         print("First time running this, so no page_destinations.csv yet.")
         print(f"Creating one now at: {CLASSIFICATION_PATH}")
@@ -393,8 +402,14 @@ def load_or_create_classification(manifest):
         write_classification_csv(rows, CLASSIFICATION_PATH)
 
         print("\nOpen that file (Excel's fine) and fill in the 'destination'")
-        print("column for every row, azure or sharepoint. Save it, then run")
-        print("this script again and it'll pick up where you left off.")
+        print("column for every row: azure, sharepoint, or discard (for")
+        print("something you've reviewed and decided not to keep")
+        print("anywhere). Save it, then run this script again and it'll")
+        print("pick up where you left off.")
+        print("\nWARNING: leaving a row blank is NOT the same as 'discard' -")
+        print("blank is treated as 'doesn't need migrating anywhere', which")
+        print("is fine if you genuinely haven't decided yet, but won't flag")
+        print("it for anyone's attention the way 'discard' does.")
         print("\nNot routing this export anywhere in particular (e.g. a")
         print("personal space you're just keeping as Markdown on your own")
         print("machine)? You don't have to fill anything in - leave every")
@@ -430,10 +445,13 @@ def load_or_create_classification(manifest):
         write_classification_csv(all_rows, CLASSIFICATION_PATH)
         print("Found some new pages since the CSV was last filled in, added")
         print(f"them to {CLASSIFICATION_PATH} with a blank destination.")
-        print("Fill those in and run this again when you're ready, or leave")
-        print("them blank if this export isn't going anywhere in particular -")
-        print("either way, run this again once there are no more new pages")
-        print("to add.")
+        print("Fill those in (azure, sharepoint, or discard) and run this")
+        print("again when you're ready, or leave them blank if this export")
+        print("isn't going anywhere in particular - either way, run this")
+        print("again once there are no more new pages to add.")
+        print("(Blank means 'doesn't need migrating', not 'discard' - use")
+        print("discard for anything you've actually reviewed and decided")
+        print("not to keep at all.)")
         return None
 
     # Normalise values so "Azure", " azure ", "AZURE" etc all match cleanly.
@@ -641,18 +659,20 @@ def main():
     global USER_DISPLAY_NAMES
     USER_DISPLAY_NAMES = load_user_display_names()
 
-    # each page lands in a subfolder matching its classification, or
-    # "unsorted" if the CSV row is blank/unrecognised
+    # each page lands in a subfolder matching its classification
+    # (azure/sharepoint/discard), or "unsorted" if the CSV row is
+    # blank/unrecognised - see the warning printed about that bucket at
+    # the end of the run.
     total_pages = len(manifest)
     conversion_warnings = []
-    destination_counts = {"azure": 0, "sharepoint": 0, "unsorted": 0}
+    destination_counts = {"azure": 0, "sharepoint": 0, "discard": 0, "unsorted": 0}
 
     for page_index, page_entry in enumerate(manifest, start=1):
         relative_folder = normalise_relative_path(page_entry["folder"])
         html_path = os.path.join(EXPORT_DIR, relative_folder, page_entry["html_file"])
 
         raw_destination = classification_lookup.get(page_entry["id"], "")
-        destination_bucket = raw_destination if raw_destination in ("azure", "sharepoint") else "unsorted"
+        destination_bucket = raw_destination if raw_destination in ("azure", "sharepoint", "discard") else "unsorted"
         destination_counts[destination_bucket] += 1
 
         # Destination folder mirrors the same relative structure as the source
@@ -719,11 +739,19 @@ def main():
     print(f"\nDone. Converted {converted_count} of {total_pages} pages.")
     print(f"  -> {destination_counts['azure']} heading to Azure DevOps Wiki")
     print(f"  -> {destination_counts['sharepoint']} heading to SharePoint")
+    if destination_counts["discard"] > 0:
+        print(f"  -> {destination_counts['discard']} marked 'discard' - reviewed and deliberately not")
+        print(f"     being kept anywhere, landed in {MARKDOWN_EXPORT_DIR}/discard/ in case anyone")
+        print("     wants one last look before it's gone for good.")
     if destination_counts["unsorted"] > 0:
-        print(f"  -> {destination_counts['unsorted']} still UNSORTED, not classified in the CSV")
-        print(f"     These landed in {MARKDOWN_EXPORT_DIR}/unsorted/ for now.")
-        print(f"     Go back to {CLASSIFICATION_PATH}, fill in the blanks, and re-run")
-        print("     this script to move them into the right spot.")
+        print(f"  -> {destination_counts['unsorted']} landed in UNSORTED")
+        print("     WARNING: blank (or anything other than azure/sharepoint/discard) is")
+        print("     treated as 'doesn't need migrating anywhere' - fine for a personal space")
+        print(f"     you're just keeping locally, but if any of these {destination_counts['unsorted']} page(s)")
+        print("     actually DO need to end up in Azure or SharePoint, go back to")
+        print(f"     {CLASSIFICATION_PATH} and classify them properly before you treat this")
+        print("     export as done.")
+        print(f"     They're sitting in {MARKDOWN_EXPORT_DIR}/unsorted/ for now.")
     print(f"Output saved to: {MARKDOWN_EXPORT_DIR}/")
 
     if conversion_warnings:

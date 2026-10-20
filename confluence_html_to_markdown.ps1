@@ -2,17 +2,25 @@
 Confluence HTML to Markdown converter.
 Reads manifest.json produced by confluence_extractor.ps1, converts each
 page's content.html into content.md, and routes the output into one of
-three folders depending on where that specific page is headed:
+four folders depending on where that specific page is headed:
 
     confluence_markdown_export/azure/...
     confluence_markdown_export/sharepoint/...
-    confluence_markdown_export/unsorted/...  (not yet classified)
+    confluence_markdown_export/discard/...   (reviewed, not being kept anywhere)
+    confluence_markdown_export/unsorted/...  (blank, or not yet classified)
 
 WHY PER-PAGE ROUTING: some pages are technical docs going to Azure DevOps
 Wiki, others are onboarding/non-technical content going to SharePoint.
 There's no reliable way to guess which is which from the content alone, so
 this script asks you to classify each page once via a CSV file, rather than
 assuming or applying one destination to everything.
+
+WARNING: a blank destination is treated as "doesn't need migrating
+anywhere" (fine for a personal space you're just keeping locally) - it is
+NOT the same as "discard". Use "discard" for something you've actually
+looked at and decided not to keep at all; leave it blank only for
+genuinely not-yet-reviewed pages, or ones that were never going anywhere
+in the first place.
 
 No credentials needed, this step is pure local file processing, nothing
 talks to Confluence.
@@ -131,7 +139,10 @@ $manifest = @(Get-Content $manifestPath -Raw | ConvertFrom-Json)
 # creates it (one row per page, id/title/destination, destination left
 # blank) and stops here so you can fill it in. Open it in Excel or any text
 # editor, type "azure" or "sharepoint" in the destination column for each
-# row, save, then run this script again.
+# row (or "discard" for something you've reviewed and decided not to keep
+# anywhere), save, then run this script again. A row left blank is treated
+# as "doesn't need migrating" (fine for a personal space), NOT as reviewed
+# and discarded - use "discard" for that instead.
 #
 # LATER RUNS: if you add more pages to confluence_export later (re-running
 # the extractor), re-run this script, it'll add any new pages to the CSV
@@ -163,9 +174,15 @@ if (-not (Test-Path $classificationPath)) {
     New-ClassificationTemplate -pages $manifest -path $classificationPath
 
     Write-Host "`nRighto, open that file (Excel's fine) and fill in the"
-    Write-Host "'destination' column for every row, azure or sharepoint."
-    Write-Host "Save it, then run this script again and it'll pick up where"
-    Write-Host "you left off."
+    Write-Host "'destination' column for every row: azure, sharepoint, or"
+    Write-Host "discard (for something you've reviewed and decided not to"
+    Write-Host "keep anywhere). Save it, then run this script again and"
+    Write-Host "it'll pick up where you left off."
+    Write-Host ""
+    Write-Host "WARNING: leaving a row blank is NOT the same as 'discard' -"
+    Write-Host "blank is treated as 'doesn't need migrating anywhere', which"
+    Write-Host "is fine if you genuinely haven't decided yet, but won't flag"
+    Write-Host "it for anyone's attention the way 'discard' does."
     Write-Host ""
     Write-Host "Not routing this export anywhere in particular (e.g. a personal"
     Write-Host "space you're just keeping as Markdown on your own machine)? You"
@@ -217,10 +234,13 @@ if ($newRowsAdded) {
     $allRows | Export-Csv -Path $classificationPath -NoTypeInformation -Encoding UTF8
     Write-Host "Found some new pages since the CSV was last filled in, added"
     Write-Host "them to $classificationPath with a blank destination."
-    Write-Host "Fill those in and run this again when you're ready, or leave"
-    Write-Host "them blank if this export isn't going anywhere in particular -"
-    Write-Host "either way, run this again once there are no more new pages"
-    Write-Host "to add."
+    Write-Host "Fill those in (azure, sharepoint, or discard) and run this"
+    Write-Host "again when you're ready, or leave them blank if this export"
+    Write-Host "isn't going anywhere in particular - either way, run this"
+    Write-Host "again once there are no more new pages to add."
+    Write-Host "(Blank means 'doesn't need migrating', not 'discard' - use"
+    Write-Host "discard for anything you've actually reviewed and decided"
+    Write-Host "not to keep at all.)"
     exit 0
 }
 
@@ -647,7 +667,9 @@ function Convert-NodeToMarkdown {
 # ============================================================
 # MAIN CONVERSION LOOP
 # Each page gets routed into a subfolder matching its classification:
-# azure, sharepoint, or unsorted (if blank or an unrecognised value).
+# azure, sharepoint, discard (reviewed and deliberately not being kept
+# anywhere), or unsorted (blank, or an unrecognised value - see the
+# warning printed about this bucket at the end of the run).
 # ============================================================
 
 $script:userDisplayNames = Get-UserDisplayNames
@@ -657,7 +679,7 @@ $pageIndex = 0
 # Anything that goes wrong on a specific page gets noted here rather than
 # stopping the whole run - reported as a summary at the end.
 $conversionWarnings = @()
-$destinationCounts = @{ azure = 0; sharepoint = 0; unsorted = 0 }
+$destinationCounts = @{ azure = 0; sharepoint = 0; discard = 0; unsorted = 0 }
 
 # Go through every page in the manifest, one at a time.
 foreach ($pageEntry in $manifest) {
@@ -666,11 +688,13 @@ foreach ($pageEntry in $manifest) {
 
     # Look up what this page was classified as in the CSV.
     $rawDestination = $classificationLookup[$pageEntry.id]
-    $destinationBucket = if ($rawDestination -eq "azure" -or $rawDestination -eq "sharepoint") {
+    $destinationBucket = if ($rawDestination -in @("azure", "sharepoint", "discard")) {
         $rawDestination
     } else {
-        # Blank, or something that isn't "azure"/"sharepoint" (a typo,
-        # say) - park it in "unsorted" rather than guessing.
+        # Blank, or something that isn't one of the three recognised
+        # values (a typo, say) - park it in "unsorted" rather than
+        # guessing. Treated as "not needed anywhere / personal-only" -
+        # see the warning printed about this bucket at the end of the run.
         "unsorted"
     }
     $destinationCounts[$destinationBucket]++
@@ -756,11 +780,20 @@ foreach ($pageEntry in $manifest) {
 Write-Host "`nAll done, no worries. Converted $($totalPages - $conversionWarnings.Count) of $totalPages pages."
 Write-Host "  -> $($destinationCounts.azure) heading to Azure DevOps Wiki"
 Write-Host "  -> $($destinationCounts.sharepoint) heading to SharePoint"
+if ($destinationCounts.discard -gt 0) {
+    Write-Host "  -> $($destinationCounts.discard) marked 'discard' - reviewed and deliberately not"
+    Write-Host "     being kept anywhere, landed in $markdownExportDir\discard\ in case anyone"
+    Write-Host "     wants one last look before it's gone for good."
+}
 if ($destinationCounts.unsorted -gt 0) {
-    Write-Host "  -> $($destinationCounts.unsorted) still UNSORTED, not classified in the CSV"
-    Write-Host "     These landed in $markdownExportDir\unsorted\ for now."
-    Write-Host "     Go back to $classificationPath, fill in the blanks, and re-run"
-    Write-Host "     this script to move them into the right spot."
+    Write-Host "  -> $($destinationCounts.unsorted) landed in UNSORTED"
+    Write-Host "     WARNING: blank (or anything other than azure/sharepoint/discard) is"
+    Write-Host "     treated as 'doesn't need migrating anywhere' - fine for a personal space"
+    Write-Host "     you're just keeping locally, but if any of these $($destinationCounts.unsorted) page(s)"
+    Write-Host "     actually DO need to end up in Azure or SharePoint, go back to"
+    Write-Host "     $classificationPath and classify them properly before you treat this"
+    Write-Host "     export as done."
+    Write-Host "     They're sitting in $markdownExportDir\unsorted\ for now."
 }
 Write-Host "Output's sitting in: $markdownExportDir\"
 

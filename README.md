@@ -150,16 +150,19 @@ python confluence_html_to_markdown.py
 
 Both do the same thing, pick whichever's available.
 
-**First run:** there's no way to reliably guess which pages are technical (Azure) versus everything else (SharePoint) just from the content, so the script won't try. Instead, it generates `confluence_export\page_destinations.csv`, one row per page (`id`, `title`, `destination`), destination left blank, and stops there. Open it in Excel, type `azure` or `sharepoint` into the destination column for each row, save, and run the script again.
+**First run:** there's no way to reliably guess which pages are technical (Azure) versus everything else (SharePoint) just from the content, so the script won't try. Instead, it generates `confluence_export\page_destinations.csv`, one row per page (`id`, `title`, `destination`), destination left blank, and stops there. Open it in Excel, type `azure`, `sharepoint`, or `discard` into the destination column for each row, save, and run the script again.
 
 For 500+ pages this is genuinely the tedious part, no way around it without something automatically guessing "is this technical," which isn't reliable enough to trust blindly. It's a one-time cost per page though, not something you repeat.
 
-**Once classified**, running the script converts each page's HTML into real Markdown (headings, bold, links, lists, tables, code blocks, info panels, the lot) and routes it into one of three folders:
+**⚠️ Blank is not the same as "discard".** A blank row is treated as *"doesn't need migrating anywhere"* - fine if you genuinely haven't reviewed that page yet, or if the whole export is just staying on your machine (a personal space, say). Use `discard` instead for a page you've actually looked at and decided isn't worth keeping at all - it still gets converted (in case anyone wants one last look before it's gone from Confluence for good) but lands in its own folder so it's clearly been through a decision, not just skipped over.
+
+**Once classified**, running the script converts each page's HTML into real Markdown (headings, bold, links, lists, tables, code blocks, info panels, the lot) and routes it into one of four folders:
 
 ```
 confluence_markdown_export/
 ├── azure/          <- pages classified "azure"
 ├── sharepoint/      <- pages classified "sharepoint"
+├── discard/          <- reviewed and deliberately not being kept anywhere
 └── unsorted/         <- blank or typo'd rows, needs a look
 ```
 
