@@ -395,6 +395,13 @@ def load_or_create_classification(manifest):
         print("\nOpen that file (Excel's fine) and fill in the 'destination'")
         print("column for every row, azure or sharepoint. Save it, then run")
         print("this script again and it'll pick up where you left off.")
+        print("\nNot routing this export anywhere in particular (e.g. a")
+        print("personal space you're just keeping as Markdown on your own")
+        print("machine)? You don't have to fill anything in - leave every")
+        print("row blank and run this script again as-is. Nothing in the")
+        print("CSV counts as 'new' until a page genuinely isn't in it yet,")
+        print("so a blank CSV won't stop it converting - everything just")
+        print(f"lands in '{MARKDOWN_EXPORT_DIR}/unsorted/' instead.")
         return None
 
     # utf-8-sig not utf-8: Excel's "CSV UTF-8" save writes a BOM, and plain
@@ -423,7 +430,10 @@ def load_or_create_classification(manifest):
         write_classification_csv(all_rows, CLASSIFICATION_PATH)
         print("Found some new pages since the CSV was last filled in, added")
         print(f"them to {CLASSIFICATION_PATH} with a blank destination.")
-        print("Fill those in and run this again when you're ready.")
+        print("Fill those in and run this again when you're ready, or leave")
+        print("them blank if this export isn't going anywhere in particular -")
+        print("either way, run this again once there are no more new pages")
+        print("to add.")
         return None
 
     # Normalise values so "Azure", " azure ", "AZURE" etc all match cleanly.

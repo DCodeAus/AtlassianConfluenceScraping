@@ -166,6 +166,14 @@ if (-not (Test-Path $classificationPath)) {
     Write-Host "'destination' column for every row, azure or sharepoint."
     Write-Host "Save it, then run this script again and it'll pick up where"
     Write-Host "you left off."
+    Write-Host ""
+    Write-Host "Not routing this export anywhere in particular (e.g. a personal"
+    Write-Host "space you're just keeping as Markdown on your own machine)? You"
+    Write-Host "don't have to fill anything in - leave every row blank and run"
+    Write-Host "this script again as-is. Nothing in the CSV counts as 'new'"
+    Write-Host "until a page genuinely isn't in it yet, so a blank CSV won't"
+    Write-Host "stop it converting - everything just lands in"
+    Write-Host "'$markdownExportDir\unsorted\' instead."
     exit 0
 }
 
@@ -209,7 +217,10 @@ if ($newRowsAdded) {
     $allRows | Export-Csv -Path $classificationPath -NoTypeInformation -Encoding UTF8
     Write-Host "Found some new pages since the CSV was last filled in, added"
     Write-Host "them to $classificationPath with a blank destination."
-    Write-Host "Fill those in and run this again when you're ready."
+    Write-Host "Fill those in and run this again when you're ready, or leave"
+    Write-Host "them blank if this export isn't going anywhere in particular -"
+    Write-Host "either way, run this again once there are no more new pages"
+    Write-Host "to add."
     exit 0
 }
 
