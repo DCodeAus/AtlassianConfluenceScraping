@@ -14,8 +14,10 @@ what got saved:
     edited in Confluence since you ran the extractor, so the export is
     out of date for them
   - every attachment on the live page was actually saved, and the saved
-    file is the same size Confluence says it is - catches failed and
-    cut-off downloads, plus anything attached since
+    file is the same size Confluence says it is - and where it isn't, the
+    file is downloaded again and compared byte for byte, since Confluence's
+    recorded sizes aren't always right. Catches failed, cut-off and
+    replaced files, plus anything attached since
   - each page's title, parent page and labels match live - catches pages
     renamed, moved or relabelled since (which doesn't always change the
     version number)
@@ -50,6 +52,7 @@ Supported by Daniel - raise issues with him.
 
 import base64
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -276,6 +279,32 @@ def main():
             results.extend(batch)
             start += len(batch)
 
+    def file_hash(path):
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def fresh_download(download_path):
+        """Downloads the live file again, without saving it anywhere, and
+        hands back its hash, size and first few bytes - so a saved file can
+        be compared with what Confluence actually sends right now, rather
+        than with the size it has on record (which isn't always right)."""
+        url = download_path if download_path.startswith("http") else f"{base_url}{download_path}"
+        request = urllib.request.Request(url)
+        request.add_header("Authorization", auth_header)
+        digest = hashlib.sha256()
+        size = 0
+        start = b""
+        with urllib.request.urlopen(request, context=ssl_context) as response:
+            for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                if not start:
+                    start = chunk[:512]
+                digest.update(chunk)
+                size += len(chunk)
+        return digest.hexdigest(), size, start
+
     matching = []
     edited_since = []
     content_differs = []
@@ -284,6 +313,7 @@ def main():
     attachment_files_wrong = []
     attachments_removed_live = []
     size_not_reported = []
+    size_record_wrong = []
     no_longer_live = []
     could_not_check = []
 
@@ -374,7 +404,23 @@ def main():
                     size_not_reported.append({"id": page_id, "title": title, "reason": f"attachment '{name}'"})
                     continue
                 elif os.path.getsize(saved_path) != int(live_size):
-                    problem = f"saved {os.path.getsize(saved_path)} bytes, live {live_size} bytes"
+                    # Confluence's recorded size isn't always right, so before
+                    # calling this a bad download, fetch the file again and
+                    # compare the actual contents.
+                    saved_size = os.path.getsize(saved_path)
+                    try:
+                        fresh_hash, fresh_size, fresh_start = fresh_download(live_attachment["_links"]["download"])
+                    except Exception as e:
+                        problem = f"saved {saved_size} bytes, Confluence says {live_size} (couldn't download it again to compare: {e})"
+                    else:
+                        looks_like_web_page = fresh_start.lstrip().lower().startswith((b"<!doctype html", b"<html"))
+                        if looks_like_web_page and not name.lower().endswith((".htm", ".html")):
+                            problem = "Confluence is sending a web page instead of this file (likely a login or error page)"
+                        elif fresh_hash == file_hash(saved_path):
+                            size_record_wrong.append({"id": page_id, "title": title, "reason": f"attachment '{name}' - Confluence says {live_size} bytes, the file is {saved_size}"})
+                            continue
+                        else:
+                            problem = f"differs from a fresh download (saved {saved_size} bytes, fresh {fresh_size}) - replaced since, or a bad download"
                 else:
                     continue
                 attachment_files_wrong.append({"id": page_id, "title": title, "attachmentName": name, "path": saved_path, "reason": f"attachment '{name}' {problem}"})
@@ -435,7 +481,7 @@ def main():
     print_issue_summary("Edited in Confluence since extraction (export out of date for these)", edited_since)
     print_issue_summary("Title, parent page or labels differ from live (renamed/moved since - re-extract)", details_differ)
     print_issue_summary("Live attachments that weren't saved", missing_attachments)
-    print_issue_summary("Saved attachments missing or a different size to live (cut-off or wrong download)", attachment_files_wrong)
+    print_issue_summary("Saved attachments missing or different from live (re-extract these pages)", attachment_files_wrong)
     print_issue_summary("Couldn't check", could_not_check)
     if space_check_note:
         print(f"  NOTE: {space_check_note}")
@@ -443,6 +489,7 @@ def main():
     print("\n--- For your information ---")
     print_issue_summary("No longer live (likely deleted/moved since extraction - not necessarily a problem)", no_longer_live)
     print_issue_summary("Attachments since removed from Confluence (still in the export)", attachments_removed_live)
+    print_issue_summary("Attachments where Confluence's recorded size is wrong, but a fresh download matches the saved file exactly (fine)", size_record_wrong)
     print_issue_summary("Attachments Confluence didn't report a size for (size not checked)", size_not_reported)
     print("  Pages restricted from your account can't be seen by any check - Confluence")
     print("  doesn't list them to you at all.")
@@ -468,6 +515,7 @@ def main():
         "noLongerLive": no_longer_live,
         "attachmentsRemovedLive": attachments_removed_live,
         "sizeNotReported": size_not_reported,
+        "sizeRecordWrong": size_record_wrong,
     }
     report_path = os.path.join(export_dir, "live_content_report.json")
     try:

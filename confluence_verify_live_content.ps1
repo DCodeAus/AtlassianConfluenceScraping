@@ -15,8 +15,10 @@ what got saved:
     edited in Confluence since you ran the extractor, so the export is
     out of date for them
   - every attachment on the live page was actually saved, and the saved
-    file is the same size Confluence says it is - catches failed and
-    cut-off downloads, plus anything attached since
+    file is the same size Confluence says it is - and where it isn't, the
+    file is downloaded again and compared byte for byte, since Confluence's
+    recorded sizes aren't always right. Catches failed, cut-off and
+    replaced files, plus anything attached since
   - each page's title, parent page and labels match live - catches pages
     renamed, moved or relabelled since (which doesn't always change the
     version number)
@@ -327,6 +329,42 @@ function Get-AllResults {
     }
 }
 
+function Get-FreshDownload {
+    # Downloads the live file again into a temporary file, and hands back
+    # its hash, size and whether it's actually a web page - so a saved file
+    # can be compared with what Confluence actually sends right now, rather
+    # than with the size it has on record (which isn't always right). The
+    # temporary file is always deleted afterwards.
+    param([string]$DownloadPath)
+    $url = if ($DownloadPath -like "http*") { $DownloadPath } else { "$BaseUrl$DownloadPath" }
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    try {
+        if ($UseDefaultCredentials) {
+            Invoke-WithRetry { Invoke-WebRequest -Uri $url -Headers $headers -OutFile $tempPath -UseBasicParsing -UseDefaultCredentials }
+        }
+        else {
+            Invoke-WithRetry { Invoke-WebRequest -Uri $url -Headers $headers -OutFile $tempPath -UseBasicParsing }
+        }
+        $stream = [System.IO.File]::OpenRead($tempPath)
+        try {
+            $buffer = New-Object byte[] 512
+            $read = $stream.Read($buffer, 0, 512)
+        }
+        finally {
+            $stream.Dispose()
+        }
+        $start = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $read).TrimStart().ToLower()
+        return [PSCustomObject]@{
+            Hash          = (Get-FileHash -LiteralPath $tempPath -Algorithm SHA256).Hash
+            Size          = (Get-Item -LiteralPath $tempPath).Length
+            IsWebPage     = $start.StartsWith("<!doctype html") -or $start.StartsWith("<html")
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $tempPath -ErrorAction SilentlyContinue
+    }
+}
+
 $matchingCount = 0
 $editedSince = @()
 $contentDiffers = @()
@@ -335,6 +373,7 @@ $missingAttachments = @()
 $attachmentFilesWrong = @()
 $attachmentsRemovedLive = @()
 $sizeNotReported = @()
+$sizeRecordWrong = @()
 $noLongerLive = @()
 $couldNotCheck = @()
 
@@ -447,7 +486,25 @@ foreach ($page in $manifest) {
             else {
                 $savedSize = (Get-Item -LiteralPath $savedPath).Length
                 if ($savedSize -eq [long]$liveSize) { continue }
-                $problem = "saved $savedSize bytes, live $liveSize bytes"
+                # Confluence's recorded size isn't always right, so before
+                # calling this a bad download, fetch the file again and
+                # compare the actual contents.
+                try {
+                    $fresh = Get-FreshDownload -DownloadPath $liveAttachment._links.download
+                    if ($fresh.IsWebPage -and $name -notmatch '\.html?$') {
+                        $problem = "Confluence is sending a web page instead of this file (likely a login or error page)"
+                    }
+                    elseif ($fresh.Hash -eq (Get-FileHash -LiteralPath $savedPath -Algorithm SHA256).Hash) {
+                        $sizeRecordWrong += [PSCustomObject]@{ id = $page.id; title = $title; reason = "attachment '$name' - Confluence says $liveSize bytes, the file is $savedSize" }
+                        continue
+                    }
+                    else {
+                        $problem = "differs from a fresh download (saved $savedSize bytes, fresh $($fresh.Size)) - replaced since, or a bad download"
+                    }
+                }
+                catch {
+                    $problem = "saved $savedSize bytes, Confluence says $liveSize (couldn't download it again to compare: $($_.Exception.Message))"
+                }
             }
             $attachmentFilesWrong += [PSCustomObject]@{ id = $page.id; title = $title; attachmentName = $name; path = $savedPath; reason = "attachment '$name' $problem" }
             $status += "attachment '$name' $problem"
@@ -519,7 +576,7 @@ Write-IssueSummary "Saved content doesn't match live (same version - the save we
 Write-IssueSummary "Edited in Confluence since extraction (export out of date for these)" $editedSince
 Write-IssueSummary "Title, parent page or labels differ from live (renamed/moved since - re-extract)" $detailsDiffer
 Write-IssueSummary "Live attachments that weren't saved" $missingAttachments
-Write-IssueSummary "Saved attachments missing or a different size to live (cut-off or wrong download)" $attachmentFilesWrong
+Write-IssueSummary "Saved attachments missing or different from live (re-extract these pages)" $attachmentFilesWrong
 Write-IssueSummary "Couldn't check" $couldNotCheck
 if ($spaceCheckNote) {
     Write-Host "  NOTE: $spaceCheckNote"
@@ -528,6 +585,7 @@ if ($spaceCheckNote) {
 Write-Host "`n--- For your information ---"
 Write-IssueSummary "No longer live (likely deleted/moved since extraction - not necessarily a problem)" $noLongerLive
 Write-IssueSummary "Attachments since removed from Confluence (still in the export)" $attachmentsRemovedLive
+Write-IssueSummary "Attachments where Confluence's recorded size is wrong, but a fresh download matches the saved file exactly (fine)" $sizeRecordWrong
 Write-IssueSummary "Attachments Confluence didn't report a size for (size not checked)" $sizeNotReported
 Write-Host "  Pages restricted from your account can't be seen by any check - Confluence"
 Write-Host "  doesn't list them to you at all."
@@ -559,6 +617,7 @@ $report = [PSCustomObject]@{
     noLongerLive           = $noLongerLive
     attachmentsRemovedLive = $attachmentsRemovedLive
     sizeNotReported        = $sizeNotReported
+    sizeRecordWrong        = $sizeRecordWrong
 }
 
 $reportPath = Join-Path $ExportDir "live_content_report.json"
