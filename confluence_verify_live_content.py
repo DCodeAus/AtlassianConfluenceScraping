@@ -13,10 +13,17 @@ what got saved:
   - the live version number is the same one extracted - catches pages
     edited in Confluence since you ran the extractor, so the export is
     out of date for them
-  - every attachment on the live page was actually saved - catches
-    downloads the extractor warned about and moved on from (those never
-    make it into the manifest, so confluence_verify_extraction can't see
-    them), plus anything attached since
+  - every attachment on the live page was actually saved, and the saved
+    file is the same size Confluence says it is - catches failed and
+    cut-off downloads, plus anything attached since
+  - each page's title, parent page and labels match live - catches pages
+    renamed, moved or relabelled since (which doesn't always change the
+    version number)
+  - every page live in the space is in the export at all - catches pages
+    the extractor never got to, or added since
+
+Results are split into "must fix before Confluence is switched off" and
+"for your information".
 
 Only reads from Confluence and only writes one report file
 (live_content_report.json) into the export folder - never changes
@@ -255,22 +262,28 @@ def main():
             print(f"    Request failed ({last_error}), retrying in {wait:.1f}s (attempt {attempt}/{RETRY_MAX_ATTEMPTS})...")
             time.sleep(wait)
 
-    def get_live_attachment_names(page_id):
-        names = []
+    def get_all(path, params):
+        """Every result from a listing, a batch at a time. Stops on an EMPTY
+        batch and moves on by however many actually came back - some
+        servers cap the batch size below what's asked for, and stopping
+        on a short batch would silently miss the rest."""
+        results = []
         start = 0
-        limit = 50
         while True:
-            data = api_get(f"/rest/api/content/{page_id}/child/attachment", {"start": start, "limit": limit})
-            results = data.get("results", [])
-            names.extend(a["title"] for a in results)
-            if len(results) < limit:
-                return names
-            start += limit
+            batch = api_get(path, {**params, "start": start, "limit": 50}).get("results", [])
+            if not batch:
+                return results
+            results.extend(batch)
+            start += len(batch)
 
     matching = []
     edited_since = []
     content_differs = []
+    details_differ = []
     missing_attachments = []
+    attachment_files_wrong = []
+    attachments_removed_live = []
+    size_not_reported = []
     no_longer_live = []
     could_not_check = []
 
@@ -280,7 +293,7 @@ def main():
         status = []
 
         try:
-            live = api_get(f"/rest/api/content/{page_id}", {"expand": "body.storage,version"})
+            live = api_get(f"/rest/api/content/{page_id}", {"expand": "body.storage,version,ancestors,metadata.labels"})
             live_body = normalise_line_endings(live.get("body", {}).get("storage", {}).get("value", ""))
             live_version = live.get("version", {}).get("number")
             saved_version = page.get("version")
@@ -322,14 +335,54 @@ def main():
                         })
                         status.append("content differs")
 
+                # Title, parent and labels, as the extractor recorded them.
+                # Only when the version matches - an edited page is already
+                # flagged above, and would differ here for the same reason.
+                live_ancestors = live.get("ancestors", [])
+                live_parent = live_ancestors[-1]["id"] if live_ancestors else None
+                live_labels = sorted(l["name"] for l in live.get("metadata", {}).get("labels", {}).get("results", []))
+                differences = []
+                if live.get("title") != title:
+                    differences.append(f"title now '{live.get('title')}'")
+                if "parent_id" in page and live_parent != page.get("parent_id"):
+                    differences.append("moved to a different parent page")
+                if "labels" in page and live_labels != sorted(page.get("labels") or []):
+                    differences.append(f"labels now {', '.join(live_labels) or '(none)'}")
+                if differences:
+                    details_differ.append({"id": page_id, "title": title, "reason": "; ".join(differences)})
+                    status.append("title/parent/labels differ")
+
             # Compared by original Confluence filename - the manifest only
             # records attachments that actually downloaded, under the
             # name Confluence gave them (not the sanitised name on disk).
-            saved_names = {a["filename"] for a in page.get("attachments", [])}
-            for name in get_live_attachment_names(page_id):
-                if name not in saved_names:
+            saved_by_name = {a["filename"]: a for a in page.get("attachments", [])}
+            page_folder = os.path.join(export_dir, normalise_relative_path(page["folder"]))
+            live_names = set()
+            for live_attachment in get_all(f"/rest/api/content/{page_id}/child/attachment", {"expand": "version"}):
+                name = live_attachment["title"]
+                live_names.add(name)
+                saved_attachment = saved_by_name.get(name)
+                if not saved_attachment:
                     missing_attachments.append({"id": page_id, "title": title, "reason": f"attachment '{name}'", "attachmentName": name})
                     status.append(f"attachment '{name}' not saved")
+                    continue
+                saved_path = os.path.join(page_folder, "images", saved_attachment["saved_as"])
+                live_size = live_attachment.get("extensions", {}).get("fileSize")
+                if not os.path.isfile(saved_path):
+                    problem = "missing on disk"
+                elif live_size is None:
+                    size_not_reported.append({"id": page_id, "title": title, "reason": f"attachment '{name}'"})
+                    continue
+                elif os.path.getsize(saved_path) != int(live_size):
+                    problem = f"saved {os.path.getsize(saved_path)} bytes, live {live_size} bytes"
+                else:
+                    continue
+                attachment_files_wrong.append({"id": page_id, "title": title, "attachmentName": name, "path": saved_path, "reason": f"attachment '{name}' {problem}"})
+                status.append(f"attachment '{name}' {problem}")
+
+            for name in saved_by_name:
+                if name not in live_names:
+                    attachments_removed_live.append({"id": page_id, "title": title, "reason": f"attachment '{name}'"})
 
             if not status:
                 matching.append(page_id)
@@ -357,17 +410,46 @@ def main():
         print(f"[{index}/{len(manifest)}] {title} - {', '.join(status) if status else 'matches'}")
         time.sleep(REQUEST_DELAY_SECONDS)
 
-    print("\n--- Live content check ---")
+    # Pages live in the space that the export doesn't have at all - the
+    # loop above only looks at pages the manifest already knows about.
+    # Needs the space key the extractor saved; a one-page export has none.
+    space_key = os.environ.get("CONFLUENCE_SPACE_KEY") or saved.get("spaceKey")
+    missing_pages = []
+    space_check_note = None
+    if space_key:
+        print(f"\nListing every page live in space '{space_key}'...")
+        try:
+            manifest_ids = {p["id"] for p in manifest}
+            live_pages = get_all("/rest/api/content", {"spaceKey": space_key, "type": "page"})
+            missing_pages = [{"id": p["id"], "title": p["title"]} for p in live_pages if p["id"] not in manifest_ids]
+            print(f"  {len(live_pages)} page(s) live, {len(manifest)} in the export.")
+        except Exception as e:
+            space_check_note = f"Couldn't list the space's pages: {e}"
+    else:
+        space_check_note = "No space key saved with this export (a one-page export?), so pages missing from it weren't looked for."
+
+    print("\n--- Must fix before Confluence is switched off ---")
     print(f"  Pages matching live exactly : {len(matching)} of {len(manifest)}")
+    print_issue_summary("Live pages missing from the export entirely", missing_pages)
     print_issue_summary("Saved content doesn't match live (same version - the save went wrong, re-extract these)", content_differs)
     print_issue_summary("Edited in Confluence since extraction (export out of date for these)", edited_since)
+    print_issue_summary("Title, parent page or labels differ from live (renamed/moved since - re-extract)", details_differ)
     print_issue_summary("Live attachments that weren't saved", missing_attachments)
+    print_issue_summary("Saved attachments missing or a different size to live (cut-off or wrong download)", attachment_files_wrong)
     print_issue_summary("Couldn't check", could_not_check)
-    print_issue_summary("No longer live (likely deleted/moved since extraction - not necessarily a problem)", no_longer_live)
+    if space_check_note:
+        print(f"  NOTE: {space_check_note}")
 
-    has_issues = bool(content_differs or edited_since or missing_attachments or could_not_check)
+    print("\n--- For your information ---")
+    print_issue_summary("No longer live (likely deleted/moved since extraction - not necessarily a problem)", no_longer_live)
+    print_issue_summary("Attachments since removed from Confluence (still in the export)", attachments_removed_live)
+    print_issue_summary("Attachments Confluence didn't report a size for (size not checked)", size_not_reported)
+    print("  Pages restricted from your account can't be seen by any check - Confluence")
+    print("  doesn't list them to you at all.")
+
+    has_issues = bool(missing_pages or content_differs or edited_since or details_differ or missing_attachments or attachment_files_wrong or could_not_check or space_check_note and space_key)
     print()
-    print("Found issues - see above (and the saved report) for details." if has_issues else "No issues found - every page matches live Confluence.")
+    print("Found issues to fix - see \"Must fix\" above (and the saved report) for details." if has_issues else "Nothing to fix - every page matches live Confluence.")
 
     report = {
         "manifestPath": manifest_path,
@@ -377,9 +459,15 @@ def main():
         "matchingCount": len(matching),
         "contentDiffers": content_differs,
         "editedSinceExtraction": edited_since,
+        "missingPages": missing_pages,
+        "detailsDiffer": details_differ,
         "missingAttachments": missing_attachments,
+        "attachmentFilesWrong": attachment_files_wrong,
         "couldNotCheck": could_not_check,
+        "spaceCheckNote": space_check_note,
         "noLongerLive": no_longer_live,
+        "attachmentsRemovedLive": attachments_removed_live,
+        "sizeNotReported": size_not_reported,
     }
     report_path = os.path.join(export_dir, "live_content_report.json")
     try:

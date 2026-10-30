@@ -2,12 +2,28 @@
 Confluence extraction verifier - PowerShell version.
 No install required.
 
-Checks what confluence_extractor.ps1 actually saved to disk against its own
-manifest.json: every page's folder and content.html actually exist and
-aren't empty, every attachment it recorded actually got downloaded, and
-nothing's listed in failures.json. This is a coverage check, not a content
-check - it tells you if something's missing or empty, not whether a table
-rendered nicely or an image is the right one. Spot-check those by eye.
+Checks what confluence_extractor.ps1 actually saved to disk, without
+needing Confluence at all:
+
+  - every page's folder and content.html exist and aren't empty
+  - every attachment it recorded is on disk, isn't empty, and isn't a web
+    page saved in place of the real file (what you get when a proxy or
+    login page answers instead of Confluence)
+  - nothing's listed in failures.json (failed pages AND failed
+    attachment downloads)
+  - every image/file each page shows or links to was actually saved -
+    including ones that really live on a DIFFERENT page, which don't come
+    down with this one
+  - and, for information: links to pages that aren't in this export,
+    macros that pull their content from somewhere else (Jira, include
+    page, page trees...) so it won't come with the export, and page
+    folders on disk the manifest doesn't know about
+
+Results are split into "must fix before Confluence is switched off" and
+"for your information". It tells you if something's missing, empty or
+broken - not whether a table rendered nicely, so still spot-check a few
+pages by eye. confluence_verify_live_content.ps1 goes further, comparing
+every page against Confluence itself.
 
 Asks which export folder to check - a folder name next to this script, or
 a full path anywhere (e.g. a shared drive holding several spaces' exports).
@@ -169,20 +185,84 @@ Write-Host "Reading $manifestPath ..."
 # @()-wrapped for the same reason every other script here does this: a
 # manifest with exactly one page would otherwise come back as a bare
 # object instead of a one-item array, and break the loop below.
-$manifest = @((Get-Content -Raw $manifestPath | ConvertFrom-Json))
+# Read as UTF-8 explicitly: Windows PowerShell 5.1 otherwise assumes the
+# old Windows character set, garbling any page title with an accent or
+# curly quote - which would then never match the same title inside a page.
+function Read-Utf8Text {
+    param([string]$Path)
+    return [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $Path).Path, [System.Text.Encoding]::UTF8)
+}
+
+$manifest = @((Read-Utf8Text $manifestPath | ConvertFrom-Json))
 Write-Host "$($manifest.Count) page(s) recorded in the manifest.`n"
 
 $failuresPath = Join-Path $ExportDir "failures.json"
 $recordedFailures = @()
-if (Test-Path $failuresPath) {
-    $recordedFailures = @((Get-Content -Raw $failuresPath | ConvertFrom-Json))
+if (Test-Path -LiteralPath $failuresPath) {
+    $recordedFailures = @((Read-Utf8Text $failuresPath | ConvertFrom-Json))
+}
+
+# Patterns over the raw page HTML (Confluence's "storage format") - plain
+# regexes rather than real XML parsing, same as the extractor. An
+# <ri:attachment> is an image or file the page shows or links to; if it has
+# an <ri:page>/<ri:content-entity> inside, that file lives on a DIFFERENT
+# page and doesn't come down with this one.
+$attachmentRefPattern = [regex]::new('<ri:attachment\b([^>]*?)(?:/>|>(.*?)</ri:attachment>)', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+$pageRefPattern = [regex]::new('<ri:page\b([^>]*?)/?>')
+$contentIdPattern = [regex]::new('<ri:content-entity\b[^>]*\bri:content-id="([^"]+)"')
+$macroPattern = [regex]::new('<ac:structured-macro\b[^>]*\bac:name="([^"]+)"')
+
+# Macros that show content which isn't actually stored in the page itself -
+# it's fetched from elsewhere (another page, Jira, a live list) each time
+# the page is viewed, so the export only has the macro, not what it showed.
+$externalContentMacros = @(
+    "include", "excerpt-include", "jira", "jiraissues", "jirachart",
+    "children", "pagetree", "pagetreesearch", "contentbylabel",
+    "content-report-table", "detailssummary", "recently-updated",
+    "task-report", "blog-posts", "gadget", "widget", "iframe", "rss",
+    "html-include", "space-details", "spaces"
+)
+
+function Get-Attribute {
+    param([string]$Attributes, [string]$Name)
+    $match = [regex]::Match($Attributes, [regex]::Escape($Name) + '="([^"]*)"')
+    if ($match.Success) { return [System.Net.WebUtility]::HtmlDecode($match.Groups[1].Value) }
+    return $null
+}
+
+# What a saved file starts with if it's actually a web page (a proxy's
+# login screen, an error page) that got saved in place of the real file.
+function Test-LooksLikeWebPage {
+    param([string]$Path)
+    $stream = [System.IO.File]::OpenRead((Resolve-Path -LiteralPath $Path).Path)
+    try {
+        $buffer = New-Object byte[] 512
+        $read = $stream.Read($buffer, 0, 512)
+    }
+    finally {
+        $stream.Dispose()
+    }
+    $start = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $read).TrimStart().ToLower()
+    return $start.StartsWith("<!doctype html") -or $start.StartsWith("<html")
 }
 
 $missingFolders = @()
 $missingOrEmptyContent = @()
-$missingAttachments = @()
+$badAttachments = @()
+$missingReferencedFiles = @()
+$linksOutsideExport = @()
+$pagesWithExternalMacros = @()
 $seenIds = [System.Collections.Generic.HashSet[string]]::new()
 $duplicateIds = @()
+
+# For looking up pages a page refers to, by title or by ID.
+$pagesByTitle = @{}
+$pagesById = @{}
+foreach ($p in $manifest) {
+    $pagesByTitle[[string]$p.title] = $p
+    $pagesById[[string]$p.id] = $p
+}
+$exportSpaceKey = (Get-ExportSource -Dir $ExportDir).spaceKey
 
 $index = 0
 foreach ($page in $manifest) {
@@ -204,25 +284,128 @@ foreach ($page in $manifest) {
     }
 
     $htmlPath = Join-Path $pageFolder $page.html_file
-    if (-not (Test-Path $htmlPath)) {
+    $body = ""
+    if (-not (Test-Path -LiteralPath $htmlPath)) {
         $missingOrEmptyContent += [PSCustomObject]@{ id = $page.id; title = $page.title; path = $htmlPath; reason = "missing" }
     }
+    elseif ((Get-Item -LiteralPath $htmlPath).Length -eq 0) {
+        $missingOrEmptyContent += [PSCustomObject]@{ id = $page.id; title = $page.title; path = $htmlPath; reason = "empty (0 bytes)" }
+    }
     else {
-        $size = (Get-Item $htmlPath).Length
-        if ($size -eq 0) {
-            $missingOrEmptyContent += [PSCustomObject]@{ id = $page.id; title = $page.title; path = $htmlPath; reason = "empty (0 bytes)" }
+        $body = Read-Utf8Text $htmlPath
+    }
+
+    # @()-wrapped so a page with exactly one attachment is still a list.
+    $pageAttachments = @($page.attachments | Where-Object { $_ })
+    $savedHere = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($attachment in $pageAttachments) {
+        [void]$savedHere.Add([string]$attachment.filename)
+        $attPath = Join-Path (Join-Path $pageFolder "images") $attachment.saved_as
+        $problem = $null
+        if (-not (Test-Path -LiteralPath $attPath)) {
+            $problem = "missing on disk"
+        }
+        elseif ((Get-Item -LiteralPath $attPath).Length -eq 0) {
+            $problem = "empty (0 bytes)"
+        }
+        elseif ($attachment.filename -notmatch '\.html?$' -and (Test-LooksLikeWebPage $attPath)) {
+            $problem = "is a web page, not the real file (likely a login or error page)"
+        }
+        if ($problem) {
+            $badAttachments += [PSCustomObject]@{
+                id             = $page.id
+                title          = $page.title
+                attachmentName = $attachment.filename
+                path           = $attPath
+                reason         = "attachment '$($attachment.filename)' $problem"
+            }
         }
     }
 
-    foreach ($attachment in @($page.attachments)) {
-        $attPath = Join-Path (Join-Path $pageFolder "images") $attachment.saved_as
-        if (-not (Test-Path $attPath)) {
-            $missingAttachments += [PSCustomObject]@{
-                id              = $page.id
-                title           = $page.title
-                attachmentName  = $attachment.filename
-                expectedPath    = $attPath
+    # Every image/file this page shows or links to should have been saved -
+    # either with this page, or with the other page it really lives on, as
+    # long as that page is in this export too.
+    foreach ($ref in $attachmentRefPattern.Matches($body)) {
+        $filename = Get-Attribute $ref.Groups[1].Value "ri:filename"
+        if (-not $filename) { continue }
+        $inner = $ref.Groups[2].Value
+        $otherPageTag = $pageRefPattern.Match($inner)
+        $otherId = $contentIdPattern.Match($inner)
+        if ($otherPageTag.Success) {
+            $otherTitle = [string](Get-Attribute $otherPageTag.Groups[1].Value "ri:content-title")
+            $otherSpace = [string](Get-Attribute $otherPageTag.Groups[1].Value "ri:space-key")
+            $other = if ((-not $otherSpace) -or $otherSpace -eq $exportSpaceKey) { $pagesByTitle[$otherTitle] } else { $null }
+            $where = "page '$otherTitle'" + $(if ($otherSpace) { " in space $otherSpace" } else { "" })
+        }
+        elseif ($otherId.Success) {
+            $other = $pagesById[$otherId.Groups[1].Value]
+            $where = "page id $($otherId.Groups[1].Value)"
+        }
+        elseif ($inner -like "*<ri:*") {
+            $other = $null
+            $where = "another page or blog post"
+        }
+        else {
+            if (-not $savedHere.Contains($filename)) {
+                $missingReferencedFiles += [PSCustomObject]@{ id = $page.id; title = $page.title; reason = "'$filename' wasn't saved with this page" }
             }
+            continue
+        }
+        if (-not $other) {
+            $missingReferencedFiles += [PSCustomObject]@{ id = $page.id; title = $page.title; reason = "'$filename' lives on $where, which isn't in this export" }
+        }
+        else {
+            $savedThere = @($other.attachments | Where-Object { $_ -and ([string]$_.filename).ToLower() -eq $filename.ToLower() })
+            if ($savedThere.Count -eq 0) {
+                $missingReferencedFiles += [PSCustomObject]@{ id = $page.id; title = $page.title; reason = "'$filename' lives on $where, but wasn't saved there" }
+            }
+        }
+    }
+
+    # Links to other pages (attachment references already handled above,
+    # so they're cut out first so their <ri:page> isn't counted twice).
+    # Only informational - the link text survives, the page it points at
+    # just isn't part of this export.
+    $outside = @()
+    foreach ($link in $pageRefPattern.Matches($attachmentRefPattern.Replace($body, ""))) {
+        $linkTitle = Get-Attribute $link.Groups[1].Value "ri:content-title"
+        $linkSpace = [string](Get-Attribute $link.Groups[1].Value "ri:space-key")
+        if (-not $linkTitle) { continue }
+        if (($linkSpace -and $linkSpace -ne $exportSpaceKey) -or -not $pagesByTitle.ContainsKey($linkTitle)) {
+            $outside += $linkTitle + $(if ($linkSpace) { " (space $linkSpace)" } else { "" })
+        }
+    }
+    if ($outside.Count -gt 0) {
+        $unique = @($outside | Sort-Object -Unique)
+        $shown = (($unique | Select-Object -First 3) | ForEach-Object { "'$_'" }) -join ", "
+        if ($unique.Count -gt 3) { $shown += " and $($unique.Count - 3) more" }
+        $linksOutsideExport += [PSCustomObject]@{ id = $page.id; title = $page.title; reason = "links to $shown"; targets = $unique }
+    }
+
+    $macros = @($macroPattern.Matches($body) | ForEach-Object { $_.Groups[1].Value } | Where-Object { $externalContentMacros -contains $_ })
+    if ($macros.Count -gt 0) {
+        $counts = [ordered]@{}
+        foreach ($name in ($macros | Sort-Object -Unique)) {
+            $counts[$name] = @($macros | Where-Object { $_ -eq $name }).Count
+        }
+        $reason = ($counts.Keys | ForEach-Object { if ($counts[$_] -gt 1) { "$_ x$($counts[$_])" } else { $_ } }) -join ", "
+        $pagesWithExternalMacros += [PSCustomObject]@{ id = $page.id; title = $page.title; reason = $reason; macros = $counts }
+    }
+}
+
+# Page folders on disk the manifest doesn't list - usually left from an
+# earlier run, but worth a look: content here is invisible to the converter
+# and every other script, since they all go by the manifest.
+$listedFolders = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($p in $manifest) {
+    [void]$listedFolders.Add([System.IO.Path]::GetFullPath((Join-Path $ExportDir (Get-NormalisedRelativePath $p.folder))))
+}
+$unlistedFolders = @()
+$pagesRoot = Join-Path $ExportDir "pages"
+if (Test-Path -LiteralPath $pagesRoot) {
+    foreach ($folder in (Get-ChildItem -LiteralPath $pagesRoot -Directory | Sort-Object Name)) {
+        if (-not $listedFolders.Contains([System.IO.Path]::GetFullPath($folder.FullName))) {
+            $unlistedFolders += [PSCustomObject]@{ id = ($folder.Name -split "_", 2)[0]; title = $folder.Name; path = $folder.FullName }
         }
     }
 }
@@ -243,12 +426,18 @@ function Write-IssueSummary {
     }
 }
 
-Write-Host "`n--- Manifest checks ---"
-Write-IssueSummary "Pages recorded as failed during extraction (failures.json)" $recordedFailures
+Write-Host "`n--- Must fix before Confluence is switched off ---"
+Write-IssueSummary "Failed during extraction - pages and attachments (failures.json)" $recordedFailures
 Write-IssueSummary "Duplicate page IDs in manifest" $duplicateIds
 Write-IssueSummary "Page folders missing on disk" $missingFolders
 Write-IssueSummary "content.html missing or empty" $missingOrEmptyContent
-Write-IssueSummary "Attachments recorded but missing on disk" $missingAttachments
+Write-IssueSummary "Attachment files missing, empty or not the real file" $badAttachments
+Write-IssueSummary "Images/files a page shows or links to that weren't saved" $missingReferencedFiles
+
+Write-Host "`n--- For your information ---"
+Write-IssueSummary "Pages using macros whose content lives elsewhere (it won't come with the export)" $pagesWithExternalMacros
+Write-IssueSummary "Pages linking to pages that aren't in this export" $linksOutsideExport
+Write-IssueSummary "Page folders on disk the manifest doesn't list (invisible to the other scripts)" $unlistedFolders
 
 $liveCheck = $null
 
@@ -312,10 +501,13 @@ if ($CheckLiveSpace) {
             $data = Invoke-ConfluenceApi -Uri $uri
             $results = @($data.results)
             $livePages += $results
-            if ($results.Count -lt $pageSize) {
+            # Empty batch means done, and move on by however many actually
+            # came back - some servers cap the page size below what's asked
+            # for, see the extractor for why.
+            if ($results.Count -eq 0) {
                 break
             }
-            $start += $pageSize
+            $start += $results.Count
         }
 
         $liveIds = [System.Collections.Generic.HashSet[string]]::new()
@@ -344,17 +536,17 @@ if ($CheckLiveSpace) {
     }
 }
 
-$hasIssues = $recordedFailures.Count -gt 0 -or $duplicateIds.Count -gt 0 -or $missingFolders.Count -gt 0 -or $missingOrEmptyContent.Count -gt 0 -or $missingAttachments.Count -gt 0
+$hasIssues = $recordedFailures.Count -gt 0 -or $duplicateIds.Count -gt 0 -or $missingFolders.Count -gt 0 -or $missingOrEmptyContent.Count -gt 0 -or $badAttachments.Count -gt 0 -or $missingReferencedFiles.Count -gt 0
 if ($liveCheck -and $liveCheck.missingFromExtraction.Count -gt 0) {
     $hasIssues = $true
 }
 
 Write-Host ""
 if ($hasIssues) {
-    Write-Host "Found issues - see above (and the saved report) for details."
+    Write-Host "Found issues to fix - see ""Must fix"" above (and the saved report) for details."
 }
 else {
-    Write-Host "No issues found."
+    Write-Host "Nothing to fix. (Check ""For your information"" above too.)"
 }
 
 $report = [PSCustomObject]@{
@@ -364,7 +556,11 @@ $report = [PSCustomObject]@{
     duplicateIds           = $duplicateIds
     missingFolders         = $missingFolders
     missingOrEmptyContent  = $missingOrEmptyContent
-    missingAttachments     = $missingAttachments
+    badAttachments         = $badAttachments
+    missingReferencedFiles = $missingReferencedFiles
+    externalContentMacros  = $pagesWithExternalMacros
+    linksOutsideExport     = $linksOutsideExport
+    unlistedFolders        = $unlistedFolders
     liveCheck              = $liveCheck
 }
 

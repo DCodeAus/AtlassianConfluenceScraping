@@ -14,10 +14,17 @@ what got saved:
   - the live version number is the same one extracted - catches pages
     edited in Confluence since you ran the extractor, so the export is
     out of date for them
-  - every attachment on the live page was actually saved - catches
-    downloads the extractor warned about and moved on from (those never
-    make it into the manifest, so confluence_verify_extraction can't see
-    them), plus anything attached since
+  - every attachment on the live page was actually saved, and the saved
+    file is the same size Confluence says it is - catches failed and
+    cut-off downloads, plus anything attached since
+  - each page's title, parent page and labels match live - catches pages
+    renamed, moved or relabelled since (which doesn't always change the
+    version number)
+  - every page live in the space is in the export at all - catches pages
+    the extractor never got to, or added since
+
+Results are split into "must fix before Confluence is switched off" and
+"for your information".
 
 Only reads from Confluence and only writes one report file
 (live_content_report.json) into the export folder - never changes
@@ -297,29 +304,37 @@ function Invoke-ConfluenceApi {
     return [System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
 }
 
-function Get-LiveAttachmentNames {
-    param([string]$PageId)
-    $names = @()
+function Get-AllResults {
+    # Every result from a listing, a batch at a time. Stops on an EMPTY
+    # batch and moves on by however many actually came back - some servers
+    # cap the batch size below what's asked for, and stopping on a short
+    # batch would silently miss the rest. $Query is everything after the
+    # "?" except start/limit.
+    param([string]$Path, [string]$Query)
+    $all = @()
     $start = 0
-    $limit = 50
     while ($true) {
-        $uri = "$BaseUrl/rest/api/content/$PageId/child/attachment?start=$start&limit=$limit"
+        $uri = "$BaseUrl$Path`?$Query&start=$start&limit=50"
         $data = Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
-        # @()-wrapped - a page with exactly one attachment would otherwise
-        # come back as a bare object.
-        $results = @($data.results)
-        foreach ($a in $results) { $names += [string]$a.title }
-        if ($results.Count -lt $limit) {
-            return $names
+        # @()-wrapped - a batch of exactly one would otherwise come back as
+        # a bare object.
+        $batch = @($data.results | Where-Object { $_ })
+        if ($batch.Count -eq 0) {
+            return $all
         }
-        $start += $limit
+        $all += $batch
+        $start += $batch.Count
     }
 }
 
 $matchingCount = 0
 $editedSince = @()
 $contentDiffers = @()
+$detailsDiffer = @()
 $missingAttachments = @()
+$attachmentFilesWrong = @()
+$attachmentsRemovedLive = @()
+$sizeNotReported = @()
 $noLongerLive = @()
 $couldNotCheck = @()
 
@@ -331,7 +346,7 @@ foreach ($page in $manifest) {
     $status = @()
 
     try {
-        $live = Invoke-WithRetry { Invoke-ConfluenceApi -Uri "$BaseUrl/rest/api/content/${pageId}?expand=body.storage,version" }
+        $live = Invoke-WithRetry { Invoke-ConfluenceApi -Uri "$BaseUrl/rest/api/content/${pageId}?expand=body.storage,version,ancestors,metadata.labels" }
         $liveBody = Get-NormalisedLineEndings ([string]$live.body.storage.value)
         $liveVersion = $live.version.number
         $savedVersion = $page.version
@@ -378,19 +393,68 @@ foreach ($page in $manifest) {
                     $status += "content differs"
                 }
             }
+
+            # Title, parent and labels, as the extractor recorded them. Only
+            # when the version matches - an edited page is already flagged
+            # above, and would differ here for the same reason.
+            $liveAncestors = @($live.ancestors | Where-Object { $_ })
+            $liveParent = if ($liveAncestors.Count -gt 0) { [string]$liveAncestors[-1].id } else { "" }
+            $liveLabels = (@($live.metadata.labels.results | Where-Object { $_ } | ForEach-Object { [string]$_.name }) | Sort-Object) -join ", "
+            $savedLabels = (@($page.labels | Where-Object { $_ } | ForEach-Object { [string]$_ }) | Sort-Object) -join ", "
+            $savedFields = $page.PSObject.Properties.Name
+            $differences = @()
+            if ([string]$live.title -cne [string]$title) {
+                $differences += "title now '$($live.title)'"
+            }
+            if ($savedFields -contains "parent_id" -and $liveParent -ne [string]$page.parent_id) {
+                $differences += "moved to a different parent page"
+            }
+            if ($savedFields -contains "labels" -and $liveLabels -cne $savedLabels) {
+                $differences += "labels now $(if ($liveLabels) { $liveLabels } else { '(none)' })"
+            }
+            if ($differences.Count -gt 0) {
+                $detailsDiffer += [PSCustomObject]@{ id = $page.id; title = $title; reason = $differences -join "; " }
+                $status += "title/parent/labels differ"
+            }
         }
 
         # Compared by original Confluence filename - the manifest only
         # records attachments that actually downloaded, under the name
         # Confluence gave them (not the sanitised name on disk).
-        $savedNames = [System.Collections.Generic.HashSet[string]]::new()
-        foreach ($a in @($page.attachments)) {
-            if ($a) { [void]$savedNames.Add([string]$a.filename) }
+        $savedByName = @{}
+        foreach ($a in @($page.attachments | Where-Object { $_ })) {
+            $savedByName[[string]$a.filename] = $a
         }
-        foreach ($name in @(Get-LiveAttachmentNames -PageId $pageId)) {
-            if (-not $savedNames.Contains($name)) {
+        $pageFolder = Join-Path $ExportDir (Get-NormalisedRelativePath $page.folder)
+        $liveNames = [System.Collections.Generic.HashSet[string]]::new()
+        foreach ($liveAttachment in @(Get-AllResults -Path "/rest/api/content/$pageId/child/attachment" -Query "expand=version")) {
+            $name = [string]$liveAttachment.title
+            [void]$liveNames.Add($name)
+            if (-not $savedByName.ContainsKey($name)) {
                 $missingAttachments += [PSCustomObject]@{ id = $page.id; title = $title; reason = "attachment '$name'"; attachmentName = $name }
                 $status += "attachment '$name' not saved"
+                continue
+            }
+            $savedPath = Join-Path (Join-Path $pageFolder "images") $savedByName[$name].saved_as
+            $liveSize = $liveAttachment.extensions.fileSize
+            if (-not (Test-Path -LiteralPath $savedPath)) {
+                $problem = "missing on disk"
+            }
+            elseif ($null -eq $liveSize) {
+                $sizeNotReported += [PSCustomObject]@{ id = $page.id; title = $title; reason = "attachment '$name'" }
+                continue
+            }
+            else {
+                $savedSize = (Get-Item -LiteralPath $savedPath).Length
+                if ($savedSize -eq [long]$liveSize) { continue }
+                $problem = "saved $savedSize bytes, live $liveSize bytes"
+            }
+            $attachmentFilesWrong += [PSCustomObject]@{ id = $page.id; title = $title; attachmentName = $name; path = $savedPath; reason = "attachment '$name' $problem" }
+            $status += "attachment '$name' $problem"
+        }
+        foreach ($name in $savedByName.Keys) {
+            if (-not $liveNames.Contains($name)) {
+                $attachmentsRemovedLive += [PSCustomObject]@{ id = $page.id; title = $title; reason = "attachment '$name'" }
             }
         }
 
@@ -425,22 +489,57 @@ foreach ($page in $manifest) {
     Start-Sleep -Seconds $RequestDelaySeconds
 }
 
-Write-Host "`n--- Live content check ---"
+# Pages live in the space that the export doesn't have at all - the loop
+# above only looks at pages the manifest already knows about. Needs the
+# space key the extractor saved; a one-page export has none.
+$spaceKey = if ($env:CONFLUENCE_SPACE_KEY) { $env:CONFLUENCE_SPACE_KEY } else { $saved.spaceKey }
+$missingPages = @()
+$spaceCheckNote = $null
+if ($spaceKey) {
+    Write-Host "`nListing every page live in space '$spaceKey'..."
+    try {
+        $manifestIds = [System.Collections.Generic.HashSet[string]]::new()
+        foreach ($p in $manifest) { [void]$manifestIds.Add([string]$p.id) }
+        $livePages = @(Get-AllResults -Path "/rest/api/content" -Query "spaceKey=$([System.Uri]::EscapeDataString($spaceKey))&type=page")
+        $missingPages = @($livePages | Where-Object { -not $manifestIds.Contains([string]$_.id) } | ForEach-Object { [PSCustomObject]@{ id = $_.id; title = $_.title } })
+        Write-Host "  $($livePages.Count) page(s) live, $($manifest.Count) in the export."
+    }
+    catch {
+        $spaceCheckNote = "Couldn't list the space's pages: $($_.Exception.Message)"
+    }
+}
+else {
+    $spaceCheckNote = "No space key saved with this export (a one-page export?), so pages missing from it weren't looked for."
+}
+
+Write-Host "`n--- Must fix before Confluence is switched off ---"
 Write-Host "  Pages matching live exactly : $matchingCount of $($manifest.Count)"
+Write-IssueSummary "Live pages missing from the export entirely" $missingPages
 Write-IssueSummary "Saved content doesn't match live (same version - the save went wrong, re-extract these)" $contentDiffers
 Write-IssueSummary "Edited in Confluence since extraction (export out of date for these)" $editedSince
+Write-IssueSummary "Title, parent page or labels differ from live (renamed/moved since - re-extract)" $detailsDiffer
 Write-IssueSummary "Live attachments that weren't saved" $missingAttachments
+Write-IssueSummary "Saved attachments missing or a different size to live (cut-off or wrong download)" $attachmentFilesWrong
 Write-IssueSummary "Couldn't check" $couldNotCheck
-Write-IssueSummary "No longer live (likely deleted/moved since extraction - not necessarily a problem)" $noLongerLive
+if ($spaceCheckNote) {
+    Write-Host "  NOTE: $spaceCheckNote"
+}
 
-$hasIssues = $contentDiffers.Count -gt 0 -or $editedSince.Count -gt 0 -or $missingAttachments.Count -gt 0 -or $couldNotCheck.Count -gt 0
+Write-Host "`n--- For your information ---"
+Write-IssueSummary "No longer live (likely deleted/moved since extraction - not necessarily a problem)" $noLongerLive
+Write-IssueSummary "Attachments since removed from Confluence (still in the export)" $attachmentsRemovedLive
+Write-IssueSummary "Attachments Confluence didn't report a size for (size not checked)" $sizeNotReported
+Write-Host "  Pages restricted from your account can't be seen by any check - Confluence"
+Write-Host "  doesn't list them to you at all."
+
+$hasIssues = $missingPages.Count -gt 0 -or $contentDiffers.Count -gt 0 -or $editedSince.Count -gt 0 -or $detailsDiffer.Count -gt 0 -or $missingAttachments.Count -gt 0 -or $attachmentFilesWrong.Count -gt 0 -or $couldNotCheck.Count -gt 0 -or ($spaceCheckNote -and $spaceKey)
 
 Write-Host ""
 if ($hasIssues) {
-    Write-Host "Found issues - see above (and the saved report) for details."
+    Write-Host "Found issues to fix - see ""Must fix"" above (and the saved report) for details."
 }
 else {
-    Write-Host "No issues found - every page matches live Confluence."
+    Write-Host "Nothing to fix - every page matches live Confluence."
 }
 
 $report = [PSCustomObject]@{
@@ -451,9 +550,15 @@ $report = [PSCustomObject]@{
     matchingCount         = $matchingCount
     contentDiffers        = $contentDiffers
     editedSinceExtraction = $editedSince
-    missingAttachments    = $missingAttachments
-    couldNotCheck         = $couldNotCheck
-    noLongerLive          = $noLongerLive
+    missingPages           = $missingPages
+    detailsDiffer          = $detailsDiffer
+    missingAttachments     = $missingAttachments
+    attachmentFilesWrong   = $attachmentFilesWrong
+    couldNotCheck          = $couldNotCheck
+    spaceCheckNote         = $spaceCheckNote
+    noLongerLive           = $noLongerLive
+    attachmentsRemovedLive = $attachmentsRemovedLive
+    sizeNotReported        = $sizeNotReported
 }
 
 $reportPath = Join-Path $ExportDir "live_content_report.json"

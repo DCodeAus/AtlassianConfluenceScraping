@@ -2,12 +2,28 @@
 Confluence extraction verifier - stdlib only, no pip install.
 
 Checks what confluence_extractor.py (or the .ps1 version - manifests from
-either are compatible) actually saved to disk against its own
-manifest.json: every page's folder and content.html actually exist and
-aren't empty, every attachment it recorded actually got downloaded, and
-nothing's listed in failures.json. This is a coverage check, not a content
-check - it tells you if something's missing or empty, not whether a table
-rendered nicely or an image is the right one. Spot-check those by eye.
+either are compatible) actually saved to disk, without needing Confluence
+at all:
+
+  - every page's folder and content.html exist and aren't empty
+  - every attachment it recorded is on disk, isn't empty, and isn't a web
+    page saved in place of the real file (what you get when a proxy or
+    login page answers instead of Confluence)
+  - nothing's listed in failures.json (failed pages AND failed
+    attachment downloads)
+  - every image/file each page shows or links to was actually saved -
+    including ones that really live on a DIFFERENT page, which don't come
+    down with this one
+  - and, for information: links to pages that aren't in this export,
+    macros that pull their content from somewhere else (Jira, include
+    page, page trees...) so it won't come with the export, and page
+    folders on disk the manifest doesn't know about
+
+Results are split into "must fix before Confluence is switched off" and
+"for your information". It tells you if something's missing, empty or
+broken - not whether a table rendered nicely, so still spot-check a few
+pages by eye. confluence_verify_live_content goes further, comparing
+every page against Confluence itself.
 
 Asks which export folder to check - a folder name next to this script, or
 a full path anywhere (e.g. a shared drive holding several spaces' exports).
@@ -29,6 +45,7 @@ Supported by Daniel - raise issues with him.
 
 import base64
 import getpass
+import html
 import json
 import os
 import re
@@ -105,6 +122,41 @@ def normalise_relative_path(relative_path):
     return relative_path.replace("\\", os.sep).replace("/", os.sep)
 
 
+# Patterns over the raw page HTML (Confluence's "storage format") - plain
+# regexes rather than real XML parsing, same as the extractor. An
+# <ri:attachment> is an image or file the page shows or links to; if it has
+# an <ri:page>/<ri:content-entity> inside, that file lives on a DIFFERENT
+# page and doesn't come down with this one.
+ATTACHMENT_REF_PATTERN = re.compile(r'<ri:attachment\b([^>]*?)(?:/>|>(.*?)</ri:attachment>)', re.S)
+PAGE_REF_PATTERN = re.compile(r'<ri:page\b([^>]*?)/?>')
+CONTENT_ID_PATTERN = re.compile(r'<ri:content-entity\b[^>]*\bri:content-id="([^"]+)"')
+MACRO_PATTERN = re.compile(r'<ac:structured-macro\b[^>]*\bac:name="([^"]+)"')
+
+# Macros that show content which isn't actually stored in the page itself -
+# it's fetched from elsewhere (another page, Jira, a live list) each time
+# the page is viewed, so the export only has the macro, not what it showed.
+EXTERNAL_CONTENT_MACROS = {
+    "include", "excerpt-include", "jira", "jiraissues", "jirachart",
+    "children", "pagetree", "pagetreesearch", "contentbylabel",
+    "content-report-table", "detailssummary", "recently-updated",
+    "task-report", "blog-posts", "gadget", "widget", "iframe", "rss",
+    "html-include", "space-details", "spaces",
+}
+
+
+def get_attribute(attributes, name):
+    match = re.search(name + r'="([^"]*)"', attributes)
+    return html.unescape(match.group(1)) if match else None
+
+
+# What a saved file starts with if it's actually a web page (a proxy's
+# login screen, an error page) that got saved in place of the real file.
+def looks_like_web_page(path):
+    with open(path, "rb") as f:
+        start = f.read(512).lstrip().lower()
+    return start.startswith(b"<!doctype html") or start.startswith(b"<html")
+
+
 def print_issue_summary(label, items, show_max=15):
     if not items:
         print(f"  {label} : none")
@@ -174,9 +226,17 @@ def main():
 
     missing_folders = []
     missing_or_empty_content = []
-    missing_attachments = []
+    bad_attachments = []
+    missing_referenced_files = []
+    links_outside_export = []
+    external_content_macros = []
     seen_ids = set()
     duplicate_ids = []
+
+    # For looking up pages a page refers to, by title or by ID.
+    pages_by_title = {page["title"]: page for page in manifest}
+    page_ids = {page["id"] for page in manifest}
+    export_space_key = read_export_source(export_dir).get("spaceKey") or ""
 
     for index, page in enumerate(manifest, start=1):
         if index % 500 == 0:
@@ -195,27 +255,114 @@ def main():
             continue
 
         html_path = os.path.join(page_folder, page["html_file"])
+        body = ""
         if not os.path.isfile(html_path):
             missing_or_empty_content.append({"id": page_id, "title": page["title"], "path": html_path, "reason": "missing"})
         elif os.path.getsize(html_path) == 0:
             missing_or_empty_content.append({"id": page_id, "title": page["title"], "path": html_path, "reason": "empty (0 bytes)"})
+        else:
+            with open(html_path, "r", encoding="utf-8-sig", errors="replace") as f:
+                body = f.read()
 
         for attachment in page.get("attachments", []):
             att_path = os.path.join(page_folder, "images", attachment["saved_as"])
+            problem = None
             if not os.path.isfile(att_path):
-                missing_attachments.append({
+                problem = "missing on disk"
+            elif os.path.getsize(att_path) == 0:
+                problem = "empty (0 bytes)"
+            elif not attachment["filename"].lower().endswith((".htm", ".html")) and looks_like_web_page(att_path):
+                problem = "is a web page, not the real file (likely a login or error page)"
+            if problem:
+                bad_attachments.append({
                     "id": page_id,
                     "title": page["title"],
                     "attachmentName": attachment["filename"],
-                    "expectedPath": att_path,
+                    "path": att_path,
+                    "reason": f"attachment '{attachment['filename']}' {problem}",
                 })
 
-    print("\n--- Manifest checks ---")
-    print_issue_summary("Pages recorded as failed during extraction (failures.json)", recorded_failures)
+        # Every image/file this page shows or links to should have been
+        # saved - either with this page, or with the other page it really
+        # lives on, as long as that page is in this export too.
+        saved_here = {a["filename"].lower() for a in page.get("attachments", [])}
+        for attributes, inner in ATTACHMENT_REF_PATTERN.findall(body):
+            filename = get_attribute(attributes, "ri:filename")
+            if not filename:
+                continue
+            inner = inner or ""
+            other_page_tag = PAGE_REF_PATTERN.search(inner)
+            other_id = CONTENT_ID_PATTERN.search(inner)
+            if other_page_tag:
+                other_title = get_attribute(other_page_tag.group(1), "ri:content-title") or ""
+                other_space = get_attribute(other_page_tag.group(1), "ri:space-key") or ""
+                other = pages_by_title.get(other_title) if other_space in ("", export_space_key) else None
+                where = f"page '{other_title}'" + (f" in space {other_space}" if other_space else "")
+            elif other_id:
+                other = next((p for p in manifest if p["id"] == other_id.group(1)), None)
+                where = f"page id {other_id.group(1)}"
+            elif "<ri:" in inner:
+                other, where = None, "another page or blog post"
+            else:
+                if filename.lower() not in saved_here:
+                    missing_referenced_files.append({"id": page_id, "title": page["title"], "reason": f"'{filename}' wasn't saved with this page"})
+                continue
+            if other is None:
+                missing_referenced_files.append({"id": page_id, "title": page["title"], "reason": f"'{filename}' lives on {where}, which isn't in this export"})
+            elif filename.lower() not in {a["filename"].lower() for a in other.get("attachments", [])}:
+                missing_referenced_files.append({"id": page_id, "title": page["title"], "reason": f"'{filename}' lives on {where}, but wasn't saved there"})
+
+        # Links to other pages (attachment references already handled
+        # above, so they're cut out first so their <ri:page> isn't counted
+        # twice). Only informational - the link text survives, the page it
+        # points at just isn't part of this export.
+        outside = []
+        for attributes in PAGE_REF_PATTERN.findall(ATTACHMENT_REF_PATTERN.sub("", body)):
+            link_title = get_attribute(attributes, "ri:content-title")
+            link_space = get_attribute(attributes, "ri:space-key") or ""
+            if not link_title:
+                continue
+            if link_space not in ("", export_space_key) or link_title not in pages_by_title:
+                outside.append(link_title + (f" (space {link_space})" if link_space else ""))
+        if outside:
+            unique = sorted(set(outside))
+            shown = ", ".join(f"'{t}'" for t in unique[:3]) + (f" and {len(unique) - 3} more" if len(unique) > 3 else "")
+            links_outside_export.append({"id": page_id, "title": page["title"], "reason": f"links to {shown}", "targets": unique})
+
+        macros = [name for name in MACRO_PATTERN.findall(body) if name in EXTERNAL_CONTENT_MACROS]
+        if macros:
+            counts = {name: macros.count(name) for name in sorted(set(macros))}
+            external_content_macros.append({
+                "id": page_id,
+                "title": page["title"],
+                "reason": ", ".join(f"{name} x{count}" if count > 1 else name for name, count in counts.items()),
+                "macros": counts,
+            })
+
+    # Page folders on disk the manifest doesn't list - usually left from an
+    # earlier run, but worth a look: content here is invisible to the
+    # converter and every other script, since they all go by the manifest.
+    listed_folders = {os.path.normcase(os.path.normpath(os.path.join(export_dir, normalise_relative_path(p["folder"])))) for p in manifest}
+    unlisted_folders = []
+    pages_root = os.path.join(export_dir, "pages")
+    if os.path.isdir(pages_root):
+        for name in sorted(os.listdir(pages_root)):
+            full = os.path.join(pages_root, name)
+            if os.path.isdir(full) and os.path.normcase(os.path.normpath(full)) not in listed_folders:
+                unlisted_folders.append({"id": name.split("_", 1)[0], "title": name, "path": full})
+
+    print("\n--- Must fix before Confluence is switched off ---")
+    print_issue_summary("Failed during extraction - pages and attachments (failures.json)", recorded_failures)
     print_issue_summary("Duplicate page IDs in manifest", duplicate_ids)
     print_issue_summary("Page folders missing on disk", missing_folders)
     print_issue_summary("content.html missing or empty", missing_or_empty_content)
-    print_issue_summary("Attachments recorded but missing on disk", missing_attachments)
+    print_issue_summary("Attachment files missing, empty or not the real file", bad_attachments)
+    print_issue_summary("Images/files a page shows or links to that weren't saved", missing_referenced_files)
+
+    print("\n--- For your information ---")
+    print_issue_summary("Pages using macros whose content lives elsewhere (it won't come with the export)", external_content_macros)
+    print_issue_summary("Pages linking to pages that aren't in this export", links_outside_export)
+    print_issue_summary("Page folders on disk the manifest doesn't list (invisible to the other scripts)", unlisted_folders)
 
     live_check = None
 
@@ -282,9 +429,12 @@ def main():
                 data = api_get({"spaceKey": space_key, "type": "page", "start": start, "limit": page_size})
                 results = data.get("results", [])
                 live_pages.extend(results)
-                if len(results) < page_size:
+                # Empty batch means done, and move on by however many
+                # actually came back - some servers cap the page size
+                # below what's asked for, see the extractor for why.
+                if not results:
                     break
-                start += page_size
+                start += len(results)
 
             live_ids = {p["id"] for p in live_pages}
             manifest_ids = {p["id"] for p in manifest}
@@ -307,12 +457,12 @@ def main():
             print("  Everything above this (the manifest-vs-disk checks) is still valid -")
             print("  this only affects the comparison against Confluence itself.")
 
-    has_issues = bool(recorded_failures or duplicate_ids or missing_folders or missing_or_empty_content or missing_attachments)
+    has_issues = bool(recorded_failures or duplicate_ids or missing_folders or missing_or_empty_content or bad_attachments or missing_referenced_files)
     if live_check and live_check["missingFromExtraction"]:
         has_issues = True
 
     print()
-    print("Found issues - see above (and the saved report) for details." if has_issues else "No issues found.")
+    print("Found issues to fix - see \"Must fix\" above (and the saved report) for details." if has_issues else "Nothing to fix. (Check \"For your information\" above too.)")
 
     report = {
         "manifestPath": manifest_path,
@@ -321,14 +471,18 @@ def main():
         "duplicateIds": duplicate_ids,
         "missingFolders": missing_folders,
         "missingOrEmptyContent": missing_or_empty_content,
-        "missingAttachments": missing_attachments,
+        "badAttachments": bad_attachments,
+        "missingReferencedFiles": missing_referenced_files,
+        "externalContentMacros": external_content_macros,
+        "linksOutsideExport": links_outside_export,
+        "unlistedFolders": unlisted_folders,
         "liveCheck": live_check,
     }
 
     report_path = os.path.join(export_dir, "verification_report.json")
     try:
         with open(report_path, "w", encoding="utf-8") as f:
-            json.dump(report, f, indent=2)
+            json.dump(report, f, indent=2, ensure_ascii=False)
         print(f"Full report saved to {report_path}")
     except Exception as e:
         print(f"Couldn't save the full report to {report_path} - {e}")

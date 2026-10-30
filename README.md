@@ -82,9 +82,9 @@ If an older version of a script ever did have real credentials typed into it and
 | `confluence_auth_test.ps1` | Same test, PowerShell version. No install needed, and it trusts whatever certs Windows already trusts, so it sidesteps SSL hassles the Python version can hit. |
 | `confluence_extractor.py` | The real extraction: walks every page in a space, saves the HTML, grabs every image, writes a manifest so the next step knows what's there. |
 | `confluence_extractor.ps1` | Same extractor, PowerShell version. Use this one if Python keeps tripping over the org's certificate. |
-| `confluence_verify_extraction.py` | Checks what actually got saved to disk against the extractor's own `manifest.json` - missing/empty `content.html`, missing attachments, anything in `failures.json`. Add `--check-live-space` to also compare against Confluence's own live page list, while it's still reachable. See "Checking an extraction is complete" below. |
+| `confluence_verify_extraction.py` | The quick check, no Confluence needed: missing/empty pages and attachments, failed downloads, files saved as a login page instead of the real thing, images a page shows that weren't saved, and macros whose content won't come with the export. Add `--check-live-space` to also compare against Confluence's live page list. See "Checking an extraction is complete" below. |
 | `confluence_verify_extraction.ps1` | Same check, PowerShell version. |
-| `confluence_verify_live_content.py` | The thorough one: re-fetches every extracted page from Confluence and compares it to what got saved - content that doesn't match, pages edited since you extracted, attachments that never downloaded. See "Checking an extraction against live Confluence" below. |
+| `confluence_verify_live_content.py` | The thorough check: re-fetches every page from Confluence and compares content, version, title/parent/labels, and every attachment's presence and size against what got saved - plus any page in the space the export doesn't have. See "Checking an extraction is complete" below. |
 | `confluence_verify_live_content.ps1` | Same check, PowerShell version. |
 | `confluence_export_to_git.py` | Turns a finished export folder into its own git repo, ready to push somewhere your team can get at it. See "Putting an export into its own git repo" below. |
 | `confluence_export_to_git.ps1` | Same thing, PowerShell version. |
@@ -108,44 +108,61 @@ Worth running this before touching the full extractor, no point discovering an a
 
 ## Checking an extraction is complete
 
-`confluence_verify_extraction.py` / `.ps1` checks what the extractor actually saved to disk against its own `manifest.json`: every page's folder and `content.html` exist and aren't empty, every attachment it recorded actually downloaded, and nothing's sitting in `failures.json`. It asks which export folder to check - give it the folder name you gave the extractor for that space, or a full path if your exports live somewhere else (say, a shared drive with one folder per space). Run it once per space. Pass the path as an argument (`-ExportDir` for PowerShell) or set `CONFLUENCE_EXPORT_DIR` to skip the question:
+With Confluence about to be switched off, the export *is* the backup - so there are two checks, and it's worth running both on every space before it goes. Both ask which export folder to check (the folder name you gave the extractor, or a full path), and both split what they find into **"Must fix before Confluence is switched off"** and **"For your information"**. Work through the first list until it says "none" everywhere; the second is for you to decide about.
+
+**1. The quick check, no Confluence needed** - `confluence_verify_extraction.py` / `.ps1`:
 
 ```
 python confluence_verify_extraction.py
 .\confluence_verify_extraction.ps1
 ```
 
-It prints a summary either way and saves the full details to `verification_report.json` in your export folder. Clean run, nothing to do. Anything listed is worth a look before you treat the export as done.
+| Must fix | |
+|---|---|
+| Failed during extraction | Pages *and* attachment downloads that failed (`failures.json`) |
+| Page folders / `content.html` missing or empty | |
+| Attachment files missing, empty, or not the real file | Including a web page saved in place of the real file - what you get when a proxy or login page answers instead of Confluence |
+| Images/files a page shows that weren't saved | Including ones that really live on a *different* page (or space), which don't come down with this one |
 
-That only catches pages the extractor *tried and failed* on, though - it can't tell you about a page that never made it into the manifest at all (say, the extractor crashed before finishing, or a page got added to the space after you ran it). While Confluence is still reachable - **especially worth doing once, before it gets decommissioned**, since that's your last chance - add `--check-live-space` (`-CheckLiveSpace` for PowerShell) to also fetch the space's live page list from Confluence itself and compare:
+| For your information | |
+|---|---|
+| Macros whose content lives elsewhere | Jira lists, "include page", page trees and similar show content that isn't stored in the page, so only the macro is in the export. Open those pages in Confluence and copy out anything you need. |
+| Links to pages not in this export | The link text survives, the page it pointed at isn't part of this export |
+| Page folders the manifest doesn't list | Usually left over from an earlier run - invisible to the converter and other scripts |
 
-```
-python confluence_verify_extraction.py --check-live-space
-.\confluence_verify_extraction.ps1 -CheckLiveSpace
-```
+Add `--check-live-space` (`-CheckLiveSpace` for PowerShell) to also compare against Confluence's live page list, catching pages that never made it into the export at all. It saves everything to `verification_report.json` in the export folder.
 
-This only asks for your login: the site address and space key are picked up from `export_source.json`, which the extractor saves into the export folder. For older exports made before that file existed, they're read from the export's own `README.md` instead, and asked for only if neither has them. The PowerShell version also takes `-UseDefaultCredentials`, same as the extractor. It flags live pages the manifest never recorded (genuinely missing - re-run the extractor, or just that one page by ID), and separately lists manifest pages no longer live (usually just deleted or moved since you extracted - not itself a problem).
-
-This is a coverage check, not a content check: it tells you something's missing or empty, not whether a table rendered nicely or an image is the right one. Still worth spot-checking a handful of pages by eye, especially ones with big tables or lots of attachments.
-
-## Checking an extraction against live Confluence
-
-`confluence_verify_live_content.py` / `.ps1` is the thorough version of the check above: instead of trusting the manifest, it re-fetches every extracted page from Confluence and compares it to what's on disk. Same folder question as above, then your login (the site address comes from the export folder, same as above):
+**2. The thorough check, against live Confluence** - `confluence_verify_live_content.py` / `.ps1`. This re-fetches every page and its attachment list from Confluence and compares them with what's on disk:
 
 ```
 python confluence_verify_live_content.py
 .\confluence_verify_live_content.ps1
 ```
 
-For each page it tells you one of:
+| Must fix | |
+|---|---|
+| Live pages missing from the export | Every page in the space is listed and compared, so nothing the extractor never got to slips through |
+| Saved content doesn't match live | Same version, but the saved copy differs, i.e. the save went wrong (cut off, garbled). The report shows where the two first differ. |
+| Edited since extraction | The page changed in Confluence after you extracted it |
+| Title, parent page or labels differ | Renamed, moved or relabelled since - these don't always change the version number |
+| Live attachments that weren't saved | |
+| Saved attachments missing or a different size | A cut-off or wrong download - compared against the size Confluence reports |
 
-- **matches** - saved `content.html` is exactly what Confluence holds (line endings aside).
-- **content differs** - same version, but the saved copy doesn't match, i.e. the save itself went wrong (cut off, garbled). Re-extract that page. The report shows where the two first differ, with a snippet of each, so you can see what kind of wrong it is.
-- **edited since** - someone changed the page in Confluence after you extracted it, so your copy is out of date rather than broken. Re-extract if you want the latest.
-- **attachment not saved** - an attachment on the live page that isn't in the export. The extractor only warns and moves on when one download fails, and those never make it into the manifest, so this is the only check that catches them.
-- **no longer live** - deleted or moved since. Usually fine.
+| For your information | |
+|---|---|
+| No longer live | Deleted or moved since - usually fine |
+| Attachments since removed from Confluence | Still in your export |
+| Attachments with no size reported | Confluence didn't say, so that one's size wasn't checked |
 
-It only reads from Confluence and only writes `live_content_report.json` into the export folder - nothing else in there gets touched. It's one request per page plus one for its attachments, so it takes about as long as the extraction did. Like the check above, it's worth running once before Confluence gets switched off. If you've used `repair_garbled_text`'s `-Force` strip on an export, those pages will show as differing, which is correct - the strip removed characters the live page still has.
+It only reads from Confluence and only writes `live_content_report.json` into the export folder. It's a couple of requests per page, so expect it to take about as long as the extraction did.
+
+**Neither check can see pages restricted from your account** - Confluence doesn't list them to you at all. If you know of restricted pages, ask whoever has access.
+
+Both checks only ask for your login: the site address and space key come from `export_source.json`, which the extractor saves into the export folder (older exports fall back to the `Source:` line of their `README.md`). The PowerShell versions also take `-UseDefaultCredentials`, same as the extractor.
+
+**Fixing what they find:** re-extract just the affected page by giving the extractor its page ID, into the *same* export folder. It updates that page in place and keeps every other page already there, so you can fix pages one at a time, then run the checks again. For pages missing from the export or a lot of problems at once, just re-run the whole space.
+
+If you've used `repair_garbled_text`'s `-Force` strip on an export, those pages will show as differing in the thorough check, which is correct - the strip removed characters the live page still has.
 
 ## Putting an export into its own git repo
 
@@ -175,7 +192,7 @@ A brief network blip won't even show up as a failure, connection errors and 5xx 
 
 Everything lands in a `confluence_export` folder (it'll ask - see below), one subfolder per page, each with its own `content.html` and `images/`. It also writes a `README.md` right into that folder, recording where it came from, who ran it, the date, and how many pages/attachments ended up there - handy if this export folder ever leaves your machine (e.g. uploaded as its own repo for a teammate), since then it doesn't depend on anyone remembering, or still having this script around.
 
-Only want one page instead of a whole space, say someone's personal space? Alongside the username/password prompts, it'll also ask for a page ID - leave it blank to pull the whole space as normal, or paste one in (grabbed straight from the page's URL, `.../pages/123456789/Page+Title`) to pull just that page instead. `SPACE_KEY` is ignored when you give it a page ID. Needs no more access than opening the page normally does. For unattended runs, set `CONFLUENCE_PAGE_ID` as an environment variable to skip the prompt, same as the credentials.
+Only want one page instead of a whole space, say someone's personal space? Alongside the username/password prompts, it'll also ask for a page ID - leave it blank to pull the whole space as normal, or paste one in (grabbed straight from the page's URL, `.../pages/123456789/Page+Title`) to pull just that page instead. `SPACE_KEY` is ignored when you give it a page ID. Needs no more access than opening the page normally does. Give it the same export folder as the rest of that space and it updates that one page in place, keeping every other page already there - that's how you fix individual pages the checks flag. For unattended runs, set `CONFLUENCE_PAGE_ID` as an environment variable to skip the prompt, same as the credentials.
 
 **Extracting more than one space** (your own team space, then a personal one, say)? It asks what to name the export folder every run, defaulting to one based on the space key (e.g. `confluence_export_TEAM`) - just answer that prompt differently for each space and they'll never overwrite each other. `confluence_html_to_markdown.ps1`/`.py` and every other script downstream ask the same thing, so give them the matching folder name when it's that space's turn. Set `CONFLUENCE_EXPORT_DIR` as an environment variable to fix it in advance for unattended runs.
 
@@ -329,7 +346,7 @@ New to this? Here's the order to actually run things in, start to finish. Everyt
    ```
    This is the one that actually talks to Confluence and downloads everything - content, images, attachments. Expect it to take a few minutes for a big space, that's normal. See "Pulling everything down" above for what the output looks like while it runs.
 
-   Then check it got everything: `.\confluence_verify_extraction.ps1` for the quick check, or `.\confluence_verify_live_content.ps1` to compare every page against live Confluence. See "Checking an extraction is complete" above.
+   Then check it got everything - both checks, while Confluence is still there: `.\confluence_verify_extraction.ps1`, then `.\confluence_verify_live_content.ps1`. Fix anything under "Must fix" and run them again until it's clear. See "Checking an extraction is complete" above.
 
 5. **Convert it to Markdown, and classify each page.** Run:
    ```
