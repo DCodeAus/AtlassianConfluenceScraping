@@ -28,7 +28,9 @@ content.html or anything else that's there.
     .\confluence_verify_live_content.ps1 -UseDefaultCredentials
 
 Asks which export folder to check (a folder name next to this script, or
-a full path anywhere), then your Confluence site address and login. Set
+a full path anywhere), then your login. The site address comes from the
+export folder itself (saved there by the extractor) - only asked for if
+it isn't there. Set
 CONFLUENCE_EXPORT_DIR, CONFLUENCE_BASE_URL, CONFLUENCE_USERNAME and
 CONFLUENCE_PASSWORD for unattended runs. Takes about as long as the
 extraction did, since it's one request per page plus one for its
@@ -87,6 +89,49 @@ function Set-Utf8NoBomContent {
 function Get-NormalisedRelativePath {
     param([string]$RelativePath)
     return $RelativePath.Replace('\', [System.IO.Path]::DirectorySeparatorChar).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+}
+
+# confluence_extractor.ps1 saves where an export came from into the export
+# folder (export_source.json), so this doesn't have to ask for the site
+# address and space key again. Exports made before that file existed still
+# have the same details on the "- Source:" line of their README.md, so
+# fall back to reading that.
+function Get-ExportSource {
+    param([string]$Dir)
+    $sourcePath = Join-Path $Dir "export_source.json"
+    if (Test-Path -LiteralPath $sourcePath) {
+        try {
+            $source = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $sourcePath).Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            return @{ baseUrl = [string]$source.baseUrl; spaceKey = [string]$source.spaceKey }
+        }
+        catch {
+            # Unreadable file - fall through to the README below instead.
+        }
+    }
+    $readmePath = Join-Path $Dir "README.md"
+    if (Test-Path -LiteralPath $readmePath) {
+        foreach ($line in [System.IO.File]::ReadAllLines((Resolve-Path -LiteralPath $readmePath).Path, [System.Text.Encoding]::UTF8)) {
+            if ($line.Trim() -match "^- Source: (\S+) \((?:space '([^']*)'|page id .*)\)") {
+                return @{ baseUrl = $Matches[1]; spaceKey = [string]$Matches[2] }
+            }
+        }
+    }
+    return @{ baseUrl = ""; spaceKey = "" }
+}
+
+function Get-EnvSavedOrAsk {
+    # An environment variable wins (for unattended runs), then whatever was
+    # saved with the export - shown, so you can see what's being used - and
+    # only if neither has it, the usual question.
+    param([string]$EnvValue, [string]$SavedValue, [string]$Label, [string[]]$HelpText)
+    if ($EnvValue) {
+        return $EnvValue
+    }
+    if ($SavedValue) {
+        Write-Host "${Label}: $SavedValue (saved with this export)"
+        return $SavedValue
+    }
+    return (Read-HostWithHelp $Label $HelpText).Trim()
 }
 
 # Python's text-mode write on Windows turns every \n into \r\n, so a
@@ -174,13 +219,11 @@ $manifest = @(([System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $manifes
 Write-Host "$($manifest.Count) page(s) recorded in $manifestPath.`n"
 
 $baseUrlHelp = @(
-    "The address of the Confluence site this export came from - no trailing",
-    "slash, and nothing after the domain (not /wiki, not a page path, just",
-    "the base site). If you're not sure, it's on the 'Source:' line of the",
-    "README.md inside the export folder."
+    "The address of the Confluence site this export came from - everything",
+    "in a page's URL before /display/ or /spaces/, with no slash on the end."
 )
-$BaseUrl = if ($env:CONFLUENCE_BASE_URL) { $env:CONFLUENCE_BASE_URL } else { (Read-HostWithHelp "Confluence base URL" $baseUrlHelp).Trim() }
-$BaseUrl = $BaseUrl.TrimEnd('/')
+$saved = Get-ExportSource -Dir $ExportDir
+$BaseUrl = (Get-EnvSavedOrAsk $env:CONFLUENCE_BASE_URL $saved.baseUrl "Confluence base URL" $baseUrlHelp).TrimEnd('/')
 
 if ($UseDefaultCredentials) {
     Write-Host "Using your current Windows login instead of a separate username/password."

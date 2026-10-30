@@ -26,7 +26,9 @@ content.html or anything else that's there.
     python confluence_verify_live_content.py C:\\path\\to\\confluence_export_TEAM
 
 Asks which export folder to check (a folder name next to this script, or
-a full path anywhere), then your Confluence site address and login. Set
+a full path anywhere), then your login. The site address comes from the
+export folder itself (saved there by the extractor) - only asked for if
+it isn't there. Set
 CONFLUENCE_EXPORT_DIR, CONFLUENCE_BASE_URL, CONFLUENCE_USERNAME and
 CONFLUENCE_PASSWORD for unattended runs. Takes about as long as the
 extraction did, since it's one request per page plus one for its
@@ -43,6 +45,7 @@ import base64
 import getpass
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -78,6 +81,41 @@ def getpass_with_help(prompt, help_lines):
             return answer
         for line in help_lines:
             print(line)
+
+
+# confluence_extractor saves where an export came from into the export
+# folder (export_source.json), so this doesn't have to ask for the site
+# address and space key again. Exports made before that file existed still
+# have the same details on the "- Source:" line of their README.md, so
+# fall back to reading that.
+def read_export_source(export_dir):
+    source_path = os.path.join(export_dir, "export_source.json")
+    if os.path.isfile(source_path):
+        try:
+            with open(source_path, "r", encoding="utf-8-sig") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    readme_path = os.path.join(export_dir, "README.md")
+    if os.path.isfile(readme_path):
+        with open(readme_path, "r", encoding="utf-8-sig") as f:
+            for line in f:
+                match = re.match(r"- Source: (\S+) \((?:space '([^']*)'|page id .*)\)", line.strip())
+                if match:
+                    return {"baseUrl": match.group(1), "spaceKey": match.group(2) or ""}
+    return {}
+
+
+def env_saved_or_ask(env_var, saved_value, label, ask):
+    """An environment variable wins (for unattended runs), then whatever
+    was saved with the export - shown, so you can see what's being used -
+    and only if neither has it, the usual question."""
+    if os.environ.get(env_var):
+        return os.environ[env_var]
+    if saved_value:
+        print(f"{label}: {saved_value} (saved with this export)")
+        return saved_value
+    return ask()
 
 
 # Same as confluence_verify_extraction - a manifest "folder" from the
@@ -167,13 +205,13 @@ def main():
         manifest = json.load(f)
     print(f"{len(manifest)} page(s) recorded in {manifest_path}.\n")
 
-    base_url = (os.environ.get("CONFLUENCE_BASE_URL") or input_with_help(
+    saved = read_export_source(export_dir)
+    base_url = env_saved_or_ask("CONFLUENCE_BASE_URL", saved.get("baseUrl"), "Confluence base URL", lambda: input_with_help(
         "Confluence base URL: ",
         [
-            "The address of the Confluence site this export came from - no",
-            "trailing slash, and nothing after the domain (not /wiki, not a",
-            "page path, just the base site). If you're not sure, it's on",
-            "the 'Source:' line of the README.md inside the export folder.",
+            "The address of the Confluence site this export came from -",
+            "everything in a page's URL before /display/ or /spaces/, with",
+            "no slash on the end.",
         ],
     ).strip()).rstrip("/")
     username = os.environ.get("CONFLUENCE_USERNAME") or input_with_help(

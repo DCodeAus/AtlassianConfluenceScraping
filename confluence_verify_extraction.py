@@ -31,6 +31,7 @@ import base64
 import getpass
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -58,6 +59,41 @@ def getpass_with_help(prompt, help_lines):
             return answer
         for line in help_lines:
             print(line)
+
+
+# confluence_extractor saves where an export came from into the export
+# folder (export_source.json), so this doesn't have to ask for the site
+# address and space key again. Exports made before that file existed still
+# have the same details on the "- Source:" line of their README.md, so
+# fall back to reading that.
+def read_export_source(export_dir):
+    source_path = os.path.join(export_dir, "export_source.json")
+    if os.path.isfile(source_path):
+        try:
+            with open(source_path, "r", encoding="utf-8-sig") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    readme_path = os.path.join(export_dir, "README.md")
+    if os.path.isfile(readme_path):
+        with open(readme_path, "r", encoding="utf-8-sig") as f:
+            for line in f:
+                match = re.match(r"- Source: (\S+) \((?:space '([^']*)'|page id .*)\)", line.strip())
+                if match:
+                    return {"baseUrl": match.group(1), "spaceKey": match.group(2) or ""}
+    return {}
+
+
+def env_saved_or_ask(env_var, saved_value, label, ask):
+    """An environment variable wins (for unattended runs), then whatever
+    was saved with the export - shown, so you can see what's being used -
+    and only if neither has it, the usual question."""
+    if os.environ.get(env_var):
+        return os.environ[env_var]
+    if saved_value:
+        print(f"{label}: {saved_value} (saved with this export)")
+        return saved_value
+    return ask()
 
 
 # A manifest "folder" value from the PowerShell extractor looks like
@@ -186,21 +222,21 @@ def main():
     if check_live_space:
         print("\n--- Live space check ---")
 
-        base_url = os.environ.get("CONFLUENCE_BASE_URL") or input_with_help(
+        saved = read_export_source(export_dir)
+        base_url = env_saved_or_ask("CONFLUENCE_BASE_URL", saved.get("baseUrl"), "Confluence base URL", lambda: input_with_help(
             "Confluence base URL: ",
             [
-                "The address of your Confluence site - no trailing slash, and",
-                "nothing after the domain (not /wiki, not a page path, just",
-                "the base site).",
+                "The address of your Confluence site - everything in a page's",
+                "URL before /display/ or /spaces/, with no slash on the end.",
             ],
-        ).strip()
-        space_key = os.environ.get("CONFLUENCE_SPACE_KEY") or input_with_help(
+        ).strip()).rstrip("/")
+        space_key = env_saved_or_ask("CONFLUENCE_SPACE_KEY", saved.get("spaceKey"), "Confluence space key", lambda: input_with_help(
             "Confluence space key: ",
             [
                 "The short code identifying which space to check, found in a",
                 "page's URL right after /display/ or /spaces/.",
             ],
-        ).strip()
+        ).strip())
         username = os.environ.get("CONFLUENCE_USERNAME") or input_with_help("Confluence username: ", [])
         password = os.environ.get("CONFLUENCE_PASSWORD") or getpass_with_help(
             "Confluence password: ",

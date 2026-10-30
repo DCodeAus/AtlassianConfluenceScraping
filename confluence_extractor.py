@@ -364,6 +364,17 @@ def main():
     pages_dir = os.path.join(OUTPUT_DIR, "pages")
     os.makedirs(pages_dir, exist_ok=True)
 
+    # Where this export came from, saved into the export folder so the
+    # verify scripts can pick it up instead of asking for the site address
+    # and space key again. Written first thing rather than at the end, so
+    # it's there even if this run stops partway. Never any login details.
+    # A one-page re-run into a folder that already has one leaves it
+    # alone, so it doesn't swap the whole space's details for one page's.
+    source_path = os.path.join(OUTPUT_DIR, "export_source.json")
+    if not (PAGE_ID and os.path.isfile(source_path)):
+        with open(source_path, "w", encoding="utf-8") as f:
+            json.dump({"baseUrl": BASE_URL.rstrip("/"), "spaceKey": SPACE_KEY, "pageId": PAGE_ID}, f, indent=2)
+
     if PAGE_ID:
         print(f"Fetching single page (id {PAGE_ID})...")
         pages = [get_single_page(PAGE_ID)]

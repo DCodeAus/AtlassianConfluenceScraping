@@ -89,6 +89,49 @@ function Get-NormalisedRelativePath {
     return $RelativePath.Replace('\', [System.IO.Path]::DirectorySeparatorChar).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
 }
 
+# confluence_extractor.ps1 saves where an export came from into the export
+# folder (export_source.json), so this doesn't have to ask for the site
+# address and space key again. Exports made before that file existed still
+# have the same details on the "- Source:" line of their README.md, so
+# fall back to reading that.
+function Get-ExportSource {
+    param([string]$Dir)
+    $sourcePath = Join-Path $Dir "export_source.json"
+    if (Test-Path -LiteralPath $sourcePath) {
+        try {
+            $source = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $sourcePath).Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            return @{ baseUrl = [string]$source.baseUrl; spaceKey = [string]$source.spaceKey }
+        }
+        catch {
+            # Unreadable file - fall through to the README below instead.
+        }
+    }
+    $readmePath = Join-Path $Dir "README.md"
+    if (Test-Path -LiteralPath $readmePath) {
+        foreach ($line in [System.IO.File]::ReadAllLines((Resolve-Path -LiteralPath $readmePath).Path, [System.Text.Encoding]::UTF8)) {
+            if ($line.Trim() -match "^- Source: (\S+) \((?:space '([^']*)'|page id .*)\)") {
+                return @{ baseUrl = $Matches[1]; spaceKey = [string]$Matches[2] }
+            }
+        }
+    }
+    return @{ baseUrl = ""; spaceKey = "" }
+}
+
+function Get-EnvSavedOrAsk {
+    # An environment variable wins (for unattended runs), then whatever was
+    # saved with the export - shown, so you can see what's being used - and
+    # only if neither has it, the usual question.
+    param([string]$EnvValue, [string]$SavedValue, [string]$Label, [string[]]$HelpText)
+    if ($EnvValue) {
+        return $EnvValue
+    }
+    if ($SavedValue) {
+        Write-Host "${Label}: $SavedValue (saved with this export)"
+        return $SavedValue
+    }
+    return (Read-HostWithHelp $Label $HelpText).Trim()
+}
+
 # Asked every run unless -ExportDir is given, so checking each space's
 # export (saved under its own folder name by confluence_extractor.ps1, maybe
 # somewhere else entirely like a shared drive) just means answering this
@@ -213,16 +256,17 @@ if ($CheckLiveSpace) {
     Write-Host "`n--- Live space check ---"
 
     $baseUrlHelp = @(
-        "The address of your Confluence site - no trailing slash, and nothing",
-        "after the domain (not /wiki, not a page path, just the base site)."
+        "The address of your Confluence site - everything in a page's URL",
+        "before /display/ or /spaces/, with no slash on the end."
     )
-    $BaseUrl = if ($env:CONFLUENCE_BASE_URL) { $env:CONFLUENCE_BASE_URL } else { (Read-HostWithHelp "Confluence base URL" $baseUrlHelp).Trim() }
+    $saved = Get-ExportSource -Dir $ExportDir
+    $BaseUrl = (Get-EnvSavedOrAsk $env:CONFLUENCE_BASE_URL $saved.baseUrl "Confluence base URL" $baseUrlHelp).TrimEnd('/')
 
     $spaceKeyHelp = @(
         "The short code identifying which space to check, found in a page's",
         "URL right after /display/ or /spaces/."
     )
-    $SpaceKey = if ($env:CONFLUENCE_SPACE_KEY) { $env:CONFLUENCE_SPACE_KEY } else { (Read-HostWithHelp "Confluence space key" $spaceKeyHelp).Trim() }
+    $SpaceKey = Get-EnvSavedOrAsk $env:CONFLUENCE_SPACE_KEY $saved.spaceKey "Confluence space key" $spaceKeyHelp
 
     if ($UseDefaultCredentials) {
         Write-Host "Using your current Windows login instead of a separate username/password."

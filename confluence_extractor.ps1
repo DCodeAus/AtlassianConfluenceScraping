@@ -550,6 +550,18 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $pagesDir = Join-Path $OutputDir "pages"
 New-Item -ItemType Directory -Force -Path $pagesDir | Out-Null
 
+# Where this export came from, saved into the export folder so the verify
+# scripts can pick it up instead of asking for the site address and space
+# key again. Written first thing rather than at the end, so it's there
+# even if this run stops partway. Never any login details. A one-page
+# re-run into a folder that already has one leaves it alone, so it doesn't
+# swap the whole space's details for one page's.
+$sourcePath = Join-Path $OutputDir "export_source.json"
+if (-not ($PageId -and (Test-Path -LiteralPath $sourcePath))) {
+    $source = [PSCustomObject]@{ baseUrl = $BaseUrl.TrimEnd('/'); spaceKey = $SpaceKey; pageId = $PageId }
+    Set-Utf8NoBomContent -Path $sourcePath -Value (ConvertTo-Json -InputObject $source)
+}
+
 if ($PageId) {
     Write-Host "Fetching single page (id $PageId)..."
 }

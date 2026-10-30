@@ -124,13 +124,13 @@ python confluence_verify_extraction.py --check-live-space
 .\confluence_verify_extraction.ps1 -CheckLiveSpace
 ```
 
-This asks for the same site address/space key/login as the extractor did (the PowerShell version also takes `-UseDefaultCredentials`, same as there). It flags live pages the manifest never recorded (genuinely missing - re-run the extractor, or just that one page by ID), and separately lists manifest pages no longer live (usually just deleted or moved since you extracted - not itself a problem).
+This only asks for your login: the site address and space key are picked up from `export_source.json`, which the extractor saves into the export folder. For older exports made before that file existed, they're read from the export's own `README.md` instead, and asked for only if neither has them. The PowerShell version also takes `-UseDefaultCredentials`, same as the extractor. It flags live pages the manifest never recorded (genuinely missing - re-run the extractor, or just that one page by ID), and separately lists manifest pages no longer live (usually just deleted or moved since you extracted - not itself a problem).
 
 This is a coverage check, not a content check: it tells you something's missing or empty, not whether a table rendered nicely or an image is the right one. Still worth spot-checking a handful of pages by eye, especially ones with big tables or lots of attachments.
 
 ## Checking an extraction against live Confluence
 
-`confluence_verify_live_content.py` / `.ps1` is the thorough version of the check above: instead of trusting the manifest, it re-fetches every extracted page from Confluence and compares it to what's on disk. Same folder question as above, then your site address and login:
+`confluence_verify_live_content.py` / `.ps1` is the thorough version of the check above: instead of trusting the manifest, it re-fetches every extracted page from Confluence and compares it to what's on disk. Same folder question as above, then your login (the site address comes from the export folder, same as above):
 
 ```
 python confluence_verify_live_content.py
