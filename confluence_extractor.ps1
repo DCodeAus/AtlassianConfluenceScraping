@@ -136,7 +136,9 @@ $spaceKeyHelp = @(
     "  .../display/ABC/Page+Title                -> space key is 'ABC'",
     "  .../spaces/ABC/pages/123456789/Page+Title  -> space key is 'ABC'",
     "Leave this blank if you're going to enter a page ID instead when",
-    "asked next."
+    "asked next - UNLESS you're re-extracting a page to fix it in an export",
+    "you already have: then still enter that space's key, so the next",
+    "question suggests that export's folder."
 )
 $SpaceKey = if ($env:CONFLUENCE_SPACE_KEY) { $env:CONFLUENCE_SPACE_KEY } else { (Read-HostWithHelp "Confluence space key (leave blank if you'll give a page ID instead)" $spaceKeyHelp).Trim() }
 

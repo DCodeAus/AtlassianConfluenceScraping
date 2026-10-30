@@ -160,7 +160,9 @@ It only reads from Confluence and only writes `live_content_report.json` into th
 
 Both checks only ask for your login: the site address and space key come from `export_source.json`, which the extractor saves into the export folder (older exports fall back to the `Source:` line of their `README.md`). The PowerShell versions also take `-UseDefaultCredentials`, same as the extractor.
 
-**Fixing what they find:** re-extract just the affected page by giving the extractor its page ID, into the *same* export folder. It updates that page in place and keeps every other page already there, so you can fix pages one at a time, then run the checks again. For pages missing from the export or a lot of problems at once, just re-run the whole space.
+**Fixing what they find:** re-extract just the affected page by giving the extractor its page ID, into the *same* export folder. It updates that page in place and keeps every other page already there, so you can fix pages one at a time, then run the checks again. When it asks for the space key, still enter that space's key (or check the folder name it suggests next is the right export) - leaving it blank suggests plain `confluence_export`, which may be a different export. For pages missing from the export or a lot of problems at once, just re-run the whole space.
+
+**Some "must fix" items can't be fixed by re-extracting**, so don't loop on them. If the quick check says a page shows an image that wasn't saved, but the thorough check *doesn't* list that file under "Live attachments that weren't saved", it was already broken in Confluence itself (the file was deleted at some point) - nothing to recover. An image borrowed from another space needs that space extracted too, or the file downloaded by hand from Confluence.
 
 If you've used `repair_garbled_text`'s `-Force` strip on an export, those pages will show as differing in the thorough check, which is correct - the strip removed characters the live page still has.
 

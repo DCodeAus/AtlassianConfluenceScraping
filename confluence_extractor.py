@@ -94,7 +94,9 @@ SPACE_KEY = os.environ.get("CONFLUENCE_SPACE_KEY") or input_with_help(
         "  .../display/ABC/Page+Title                -> space key is 'ABC'",
         "  .../spaces/ABC/pages/123456789/Page+Title  -> space key is 'ABC'",
         "Leave this blank if you're going to enter a page ID instead when",
-        "asked next.",
+        "asked next - UNLESS you're re-extracting a page to fix it in an",
+        "export you already have: then still enter that space's key, so",
+        "the next question suggests that export's folder.",
     ],
 ).strip()
 
