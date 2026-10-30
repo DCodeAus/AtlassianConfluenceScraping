@@ -54,11 +54,11 @@ def getpass_with_help(prompt, help_lines):
 BASE_URL = os.environ.get("CONFLUENCE_BASE_URL") or input_with_help(
     "Confluence base URL: ",
     [
-        "The address of your Confluence site - no trailing slash, and",
-        "nothing after the domain (not /wiki, not a page path, just the",
-        "base site). Copy it from your browser's address bar while",
-        "viewing any Confluence page, keeping only the part before",
-        "/display/ or /spaces/, e.g. https://confluence.yourcompany.com",
+        "The address of your Confluence site, with no slash on the end.",
+        "Copy it from your browser's address bar while viewing any",
+        "Confluence page, keeping only the part before /display/ or",
+        "/spaces/, e.g. https://confluence.yourcompany.com - if there's",
+        "something in between (like /wiki or /confluence), keep that too.",
     ],
 ).strip()
 SPACE_KEY = os.environ.get("CONFLUENCE_SPACE_KEY") or input_with_help(

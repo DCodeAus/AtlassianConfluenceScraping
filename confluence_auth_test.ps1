@@ -79,11 +79,11 @@ function Read-HostWithHelp {
 # share. Set CONFLUENCE_BASE_URL for unattended runs, same idea as the
 # credentials further down.
 $baseUrlHelp = @(
-    "The address of your Confluence site - no trailing slash, and nothing",
-    "after the domain (not /wiki, not a page path, just the base site).",
-    "Copy it from your browser's address bar while viewing any Confluence",
-    "page, keeping only the part before /display/ or /spaces/, e.g.",
-    "https://confluence.yourcompany.com"
+    "The address of your Confluence site, with no slash on the end. Copy it",
+    "from your browser's address bar while viewing any Confluence page,",
+    "keeping only the part before /display/ or /spaces/, e.g.",
+    "https://confluence.yourcompany.com - if there's something in between",
+    "(like /wiki or /confluence), keep that too."
 )
 $BaseUrl = if ($env:CONFLUENCE_BASE_URL) { $env:CONFLUENCE_BASE_URL } else { (Read-HostWithHelp "Confluence base URL" $baseUrlHelp).Trim() }
 

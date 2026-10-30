@@ -117,11 +117,11 @@ function Read-HostWithHelp {
 # share. Set CONFLUENCE_BASE_URL for unattended runs, same idea as the
 # credentials further down.
 $baseUrlHelp = @(
-    "The address of your Confluence site - no trailing slash, and nothing",
-    "after the domain (not /wiki, not a page path, just the base site).",
-    "Copy it from your browser's address bar while viewing any Confluence",
-    "page, keeping only the part before /display/ or /spaces/, e.g.",
-    "https://confluence.yourcompany.com"
+    "The address of your Confluence site, with no slash on the end. Copy it",
+    "from your browser's address bar while viewing any Confluence page,",
+    "keeping only the part before /display/ or /spaces/, e.g.",
+    "https://confluence.yourcompany.com - if there's something in between",
+    "(like /wiki or /confluence), keep that too."
 )
 $BaseUrl = if ($env:CONFLUENCE_BASE_URL) { $env:CONFLUENCE_BASE_URL } else { (Read-HostWithHelp "Confluence base URL" $baseUrlHelp).Trim() }
 
@@ -434,15 +434,18 @@ function Get-AllPagesInSpace {
         # Add this batch's pages onto the running total.
         $allPages += $results
 
-        # Confluence hands back fewer results than we asked for once we've
-        # reached the last batch - that's the signal to stop asking for more.
-        if ($results.Count -lt $PageSize) {
+        # An EMPTY batch is the signal there's nothing left. (Not a short
+        # one: some Confluence setups quietly hand back fewer than asked
+        # for, because of a server-side cap on page size, and treating that
+        # as "last batch" would silently miss every page after it.)
+        if ($results.Count -eq 0) {
             break
         }
 
-        # Otherwise, move the starting point forward by one batch and,
+        # Otherwise, move the starting point forward by however many
+        # actually came back (not by $PageSize, for the same reason) and,
         # after a short polite pause, go around and fetch the next one.
-        $start += $PageSize
+        $start += $results.Count
         Start-Sleep -Seconds $RequestDelaySeconds
     }
 
@@ -508,10 +511,12 @@ function Get-AttachmentsForPage {
         $results = @($data.results)
         $attachments += $results
 
-        if ($results.Count -lt $limit) {
+        # Same as Get-AllPagesInSpace - empty batch means done, and move on
+        # by however many actually came back.
+        if ($results.Count -eq 0) {
             break
         }
-        $start += $limit
+        $start += $results.Count
     }
 
     return $attachments
@@ -712,8 +717,12 @@ foreach ($page in $pages) {
                 }
                 catch {
                     # This one attachment failed - note it and move on,
-                    # don't let it take down the rest of the page.
+                    # don't let it take down the rest of the page. Recorded
+                    # in failures.json alongside failed pages, so
+                    # confluence_verify_extraction.ps1 flags it - a warning
+                    # that's scrolled off screen is too easy to miss.
                     Write-Host "    Warning: failed to download attachment '$attTitle':" $_.Exception.Message
+                    $failures += [PSCustomObject]@{ id = $pageId; title = $title; error = $_.Exception.Message; attachmentName = $attTitle }
                 }
 
                 Start-Sleep -Seconds $RequestDelaySeconds
@@ -763,9 +772,9 @@ foreach ($page in $pages) {
 # (once) to the name that's actually worth showing. Best-effort: a lookup
 # failing (e.g. a deleted user) just leaves that one out, the converter
 # falls back to showing the raw identifier instead.
+$userDisplayNames = @{}
 if ($mentionedUserKeys.Count -gt 0 -or $mentionedUsernames.Count -gt 0) {
     Write-Host "`nResolving $($mentionedUserKeys.Count + $mentionedUsernames.Count) mentioned user(s)..."
-    $userDisplayNames = @{}
 
     # Look up every distinct mentioned person exactly once (that's the
     # whole point of collecting them into $mentionedUserKeys/Usernames
@@ -781,13 +790,62 @@ if ($mentionedUserKeys.Count -gt 0 -or $mentionedUsernames.Count -gt 0) {
         Start-Sleep -Seconds $RequestDelaySeconds
     }
 
-    # Save the userkey/username -> real name lookup table so the next
-    # script can turn @mentions into actual names instead of raw IDs.
-    $userDisplayNamesPath = Join-Path $OutputDir "user_display_names.json"
+}
+
+$userDisplayNamesPath = Join-Path $OutputDir "user_display_names.json"
+$manifestPath = Join-Path $OutputDir "manifest.json"
+$failuresPath = Join-Path $OutputDir "failures.json"
+
+# Re-extracting ONE page (to fix something a verify script flagged) into a
+# folder that already holds the whole space: fold this page into what's
+# already there instead of replacing it. Otherwise the manifest would end
+# up listing just this one page - every other page still on disk, but
+# invisible to the converter and the verify scripts.
+$merging = [bool]$PageId -and (Test-Path -LiteralPath $manifestPath)
+if ($merging) {
+    $redoneIds = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($p in $pages) { [void]$redoneIds.Add([string]$p.id) }
+
+    $newEntries = @{}
+    foreach ($entry in $manifest) { $newEntries[[string]$entry.id] = $entry }
+    # @()-wrapped so a one-page existing manifest is still a list.
+    $existingManifest = @((Get-Content -Raw -LiteralPath $manifestPath -Encoding UTF8 | ConvertFrom-Json))
+    $merged = @()
+    # Keeps each page in its original place, swapping in the new entry.
+    foreach ($entry in $existingManifest) {
+        $entryId = [string]$entry.id
+        if ($newEntries.ContainsKey($entryId)) {
+            $merged += $newEntries[$entryId]
+            $newEntries.Remove($entryId)
+        }
+        else {
+            $merged += $entry
+        }
+    }
+    foreach ($entry in $manifest) {
+        if ($newEntries.ContainsKey([string]$entry.id)) { $merged += $entry }
+    }
+    $manifest = $merged
+
+    if (Test-Path -LiteralPath $failuresPath) {
+        $keptFailures = @((Get-Content -Raw -LiteralPath $failuresPath -Encoding UTF8 | ConvertFrom-Json) | Where-Object { $_ -and -not $redoneIds.Contains([string]$_.id) })
+        $failures = $keptFailures + $failures
+    }
+    if (Test-Path -LiteralPath $userDisplayNamesPath) {
+        $existingNames = Get-Content -Raw -LiteralPath $userDisplayNamesPath -Encoding UTF8 | ConvertFrom-Json
+        foreach ($prop in $existingNames.PSObject.Properties) {
+            if (-not $userDisplayNames.ContainsKey($prop.Name)) { $userDisplayNames[$prop.Name] = $prop.Value }
+        }
+    }
+    Write-Host "`nUpdated $($redoneIds.Count) page(s) in the existing export - the other pages already there are kept."
+}
+
+# Save the userkey/username -> real name lookup table so the next script
+# can turn @mentions into actual names instead of raw IDs.
+if ($userDisplayNames.Count -gt 0) {
     Set-Utf8NoBomContent -Path $userDisplayNamesPath -Value (ConvertTo-Json -InputObject $userDisplayNames -Depth 5)
 }
 
-$manifestPath = Join-Path $OutputDir "manifest.json"
 # -InputObject, not piped: piping a one-element array into ConvertTo-Json
 # writes a bare JSON object ({...}) instead of a one-item array ([{...}]),
 # since ConvertTo-Json only sees the single object the pipeline unrolled
@@ -796,17 +854,19 @@ $manifestPath = Join-Path $OutputDir "manifest.json"
 # (the documented single-page mode).
 Set-Utf8NoBomContent -Path $manifestPath -Value (ConvertTo-Json -InputObject $manifest -Depth 10)
 
-Write-Host "`nDone. $($manifest.Count) pages extracted successfully."
+$pageFailures = @($failures | Where-Object { -not $_.attachmentName })
+$attachmentFailures = @($failures | Where-Object { $_.attachmentName })
+Write-Host "`nDone. $($manifest.Count) pages in the export."
 
 if ($failures.Count -gt 0) {
     # Print a short summary of anything that failed - this always happens,
     # regardless of whether saving the file below works, so the list below
     # is never the only copy of this information.
-    Write-Host "$($failures.Count) pages failed:"
+    Write-Host "$($pageFailures.Count) page(s) and $($attachmentFailures.Count) attachment(s) failed:"
     foreach ($fail in $failures) {
-        Write-Host "  - $($fail.title) (id $($fail.id)): $($fail.error)"
+        $what = if ($fail.attachmentName) { "attachment '$($fail.attachmentName)' on " } else { "" }
+        Write-Host "  - $what$($fail.title) (id $($fail.id)): $($fail.error)"
     }
-    $failuresPath = Join-Path $OutputDir "failures.json"
     try {
         Set-Utf8NoBomContent -Path $failuresPath -Value (ConvertTo-Json -InputObject $failures -Depth 10)
         Write-Host "Failure details also saved to $failuresPath"
@@ -818,8 +878,21 @@ if ($failures.Count -gt 0) {
         Write-Host "The summary above is still accurate, this just means there's no extra copy on disk."
     }
 }
+elseif (Test-Path -LiteralPath $failuresPath) {
+    # Left over from an earlier run that DID have failures - nothing failed
+    # this time, so it'd only make the verify scripts report problems that
+    # have since been fixed.
+    Remove-Item -LiteralPath $failuresPath
+}
 
 Write-Host "`nManifest saved to $manifestPath"
+
+if ($merging) {
+    # The README describes the whole space's export - leave it as it is
+    # rather than rewriting it to describe just this one page.
+    Write-Host "Next step: run the verify scripts again to check the fix."
+    exit 0
+}
 
 # A plain-English README saved alongside the export itself - handy if
 # this folder ever leaves your machine (e.g. uploaded as its own repo for
@@ -839,7 +912,7 @@ $readmeLines = @(
     "- Attachments: $totalAttachments"
 )
 if ($failures.Count -gt 0) {
-    $readmeLines += "- Pages that failed to extract: $($failures.Count) (see failures.json)"
+    $readmeLines += "- Failed to extract: $($pageFailures.Count) page(s), $($attachmentFailures.Count) attachment(s) (see failures.json)"
 }
 $readmeLines += @(
     ""

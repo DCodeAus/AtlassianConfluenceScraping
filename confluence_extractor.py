@@ -73,11 +73,11 @@ def getpass_with_help(prompt, help_lines):
 BASE_URL = os.environ.get("CONFLUENCE_BASE_URL") or input_with_help(
     "Confluence base URL: ",
     [
-        "The address of your Confluence site - no trailing slash, and",
-        "nothing after the domain (not /wiki, not a page path, just the",
-        "base site). Copy it from your browser's address bar while",
-        "viewing any Confluence page, keeping only the part before",
-        "/display/ or /spaces/, e.g. https://confluence.yourcompany.com",
+        "The address of your Confluence site, with no slash on the end.",
+        "Copy it from your browser's address bar while viewing any",
+        "Confluence page, keeping only the part before /display/ or",
+        "/spaces/, e.g. https://confluence.yourcompany.com - if there's",
+        "something in between (like /wiki or /confluence), keep that too.",
     ],
 ).strip()
 
@@ -307,11 +307,15 @@ def get_all_pages_in_space():
         results = data.get("results", [])
         all_pages.extend(results)
 
-        if len(results) < PAGE_SIZE:
-            # last batch was smaller than a full page, we're done
+        # Stop on an EMPTY batch, not a short one, and move on by however
+        # many actually came back rather than by PAGE_SIZE. Some Confluence
+        # setups quietly hand back fewer than asked for (a server-side cap
+        # on page size), and treating that as "last batch" - or skipping
+        # ahead by the full PAGE_SIZE - would silently miss pages.
+        if not results:
             break
 
-        start += PAGE_SIZE
+        start += len(results)
         time.sleep(REQUEST_DELAY_SECONDS)
 
     return all_pages
@@ -352,9 +356,11 @@ def get_attachments_for_page(page_id):
         results = data.get("results", [])
         attachments.extend(results)
 
-        if len(results) < limit:
+        # Same as the page list above - empty batch means done, and move
+        # on by however many actually came back.
+        if not results:
             break
-        start += limit
+        start += len(results)
 
     return attachments
 
@@ -443,10 +449,12 @@ def main():
                         # to the file that's actually there.
                         attachment_records.append({"filename": att_title, "saved_as": safe_att_name})
                     except Exception as att_err:
-                        # TODO: track these and retry at the end instead of just
-                        # warning and moving on - hasn't been a big enough problem yet
+                        # Recorded in failures.json alongside failed pages, so
+                        # confluence_verify_extraction flags it - a warning
+                        # that's scrolled off screen is too easy to miss.
                         att_title = attachment.get("title", "<unknown>")
                         print(f"    Warning: failed to download attachment '{att_title}': {att_err}")
+                        failures.append({"id": page_id, "title": title, "error": str(att_err), "attachmentName": att_title})
 
                     time.sleep(REQUEST_DELAY_SECONDS)
 
@@ -494,26 +502,64 @@ def main():
                 user_display_names[username] = display_name
             time.sleep(REQUEST_DELAY_SECONDS)
 
-        user_display_names_path = os.path.join(OUTPUT_DIR, "user_display_names.json")
+    user_display_names_path = os.path.join(OUTPUT_DIR, "user_display_names.json")
+    manifest_path = os.path.join(OUTPUT_DIR, "manifest.json")
+    failures_path = os.path.join(OUTPUT_DIR, "failures.json")
+
+    # Re-extracting ONE page (to fix something a verify script flagged)
+    # into a folder that already holds the whole space: fold this page into
+    # what's already there instead of replacing it. Otherwise the manifest
+    # would end up listing just this one page - every other page still on
+    # disk, but invisible to the converter and the verify scripts.
+    merging = bool(PAGE_ID) and os.path.isfile(manifest_path)
+    if merging:
+        redone_ids = {p["id"] for p in pages}
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            existing_manifest = json.load(f)
+        new_entries = {entry["id"]: entry for entry in manifest}
+        # Keeps each page in its original place, swapping in the new entry.
+        merged = [new_entries.pop(entry["id"], entry) for entry in existing_manifest]
+        manifest = merged + list(new_entries.values())
+        if os.path.isfile(failures_path):
+            with open(failures_path, "r", encoding="utf-8") as f:
+                failures = [fail for fail in json.load(f) if fail["id"] not in redone_ids] + failures
+        if os.path.isfile(user_display_names_path):
+            with open(user_display_names_path, "r", encoding="utf-8") as f:
+                user_display_names = {**json.load(f), **user_display_names}
+        print(f"\nUpdated {len(redone_ids)} page(s) in the existing export - the other pages already there are kept.")
+
+    if user_display_names:
         with open(user_display_names_path, "w", encoding="utf-8") as f:
             json.dump(user_display_names, f, indent=2, ensure_ascii=False)
 
     # Save a manifest so the Markdown conversion step knows what's here
-    manifest_path = os.path.join(OUTPUT_DIR, "manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
-    print(f"\nDone. {len(manifest)} pages extracted successfully.")
+    page_failures = [fail for fail in failures if "attachmentName" not in fail]
+    attachment_failures = [fail for fail in failures if "attachmentName" in fail]
+    print(f"\nDone. {len(manifest)} pages in the export.")
     if failures:
-        print(f"{len(failures)} pages failed, see failures below:")
+        print(f"{len(page_failures)} page(s) and {len(attachment_failures)} attachment(s) failed:")
         for fail in failures:
-            print(f"  - {fail['title']} (id {fail['id']}): {fail['error']}")
-        failures_path = os.path.join(OUTPUT_DIR, "failures.json")
+            what = f"attachment '{fail['attachmentName']}' on " if "attachmentName" in fail else ""
+            print(f"  - {what}{fail['title']} (id {fail['id']}): {fail['error']}")
         with open(failures_path, "w", encoding="utf-8") as f:
             json.dump(failures, f, indent=2)
         print(f"Failure details saved to {failures_path}")
+    elif os.path.isfile(failures_path):
+        # Left over from an earlier run that DID have failures - nothing
+        # failed this time, so it'd only make the verify scripts report
+        # problems that have since been fixed.
+        os.remove(failures_path)
 
     print(f"\nManifest saved to {manifest_path}")
+
+    if merging:
+        # The README describes the whole space's export - leave it as it is
+        # rather than rewriting it to describe just this one page.
+        print("Next step: run the verify scripts again to check the fix.")
+        return
 
     # A plain-English README saved alongside the export itself - handy if
     # this folder ever leaves your machine (e.g. uploaded as its own repo
@@ -531,7 +577,7 @@ def main():
         f"- Attachments: {total_attachments}",
     ]
     if failures:
-        readme_lines.append(f"- Pages that failed to extract: {len(failures)} (see failures.json)")
+        readme_lines.append(f"- Failed to extract: {len(page_failures)} page(s), {len(attachment_failures)} attachment(s) (see failures.json)")
     readme_lines += [
         "",
         "## Why Markdown?",
