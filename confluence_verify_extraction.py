@@ -9,10 +9,12 @@ nothing's listed in failures.json. This is a coverage check, not a content
 check - it tells you if something's missing or empty, not whether a table
 rendered nicely or an image is the right one. Spot-check those by eye.
 
-Run from the same folder you ran the extractor from (or pass a path as the
-first argument):
+Asks which export folder to check - a folder name next to this script, or
+a full path anywhere (e.g. a shared drive holding several spaces' exports).
+Or pass it as the first argument, or set CONFLUENCE_EXPORT_DIR, to skip
+the question:
     python confluence_verify_extraction.py
-    python confluence_verify_extraction.py C:\\path\\to\\confluence_export
+    python confluence_verify_extraction.py C:\\path\\to\\confluence_export_TEAM
 
 While Confluence is still reachable - especially useful if it's about to be
 decommissioned, since this is your last chance to check - add
@@ -88,11 +90,31 @@ def main():
     args = sys.argv[1:]
     check_live_space = "--check-live-space" in args
     positional = [a for a in args if a != "--check-live-space"]
-    export_dir = positional[0] if positional else "confluence_export"
+
+    # Asked every run unless given as an argument, so checking each space's
+    # export (saved under its own folder name by confluence_extractor, maybe
+    # somewhere else entirely like a shared drive) just means answering
+    # this differently. Set CONFLUENCE_EXPORT_DIR for unattended runs.
+    if positional:
+        export_dir = positional[0]
+    else:
+        export_dir = os.environ.get("CONFLUENCE_EXPORT_DIR") or input_with_help(
+            "Export folder to check (blank for 'confluence_export'): ",
+            [
+                "Which extraction to check - the folder name you gave (or",
+                "accepted the default for) when running",
+                "confluence_extractor.py/.ps1 for that space, or its full",
+                "path if it's somewhere else (e.g. on a shared drive).",
+                "Leave blank for: confluence_export",
+            ],
+        ).strip()
+        # Windows "Copy as path" and dragging a folder into the terminal
+        # both wrap the path in quotes - strip them so either works.
+        export_dir = export_dir.strip('"').strip("'") or "confluence_export"
 
     if not os.path.isdir(export_dir):
         print(f"Can't find '{export_dir}' from here - run this from the folder")
-        print("that contains it, or pass its path as the first argument.")
+        print("that contains it, or give its full path instead.")
         sys.exit(1)
 
     manifest_path = os.path.join(export_dir, "manifest.json")

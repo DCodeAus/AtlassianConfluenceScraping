@@ -104,7 +104,7 @@ Worth running this before touching the full extractor, no point discovering an a
 
 ## Checking an extraction is complete
 
-`confluence_verify_extraction.py` / `.ps1` checks what the extractor actually saved to disk against its own `manifest.json`: every page's folder and `content.html` exist and aren't empty, every attachment it recorded actually downloaded, and nothing's sitting in `failures.json`. Run it from the same folder as the extractor, or point it at your export directly:
+`confluence_verify_extraction.py` / `.ps1` checks what the extractor actually saved to disk against its own `manifest.json`: every page's folder and `content.html` exist and aren't empty, every attachment it recorded actually downloaded, and nothing's sitting in `failures.json`. It asks which export folder to check - give it the folder name you gave the extractor for that space, or a full path if your exports live somewhere else (say, a shared drive with one folder per space). Run it once per space. Pass the path as an argument (`-ExportDir` for PowerShell) or set `CONFLUENCE_EXPORT_DIR` to skip the question:
 
 ```
 python confluence_verify_extraction.py

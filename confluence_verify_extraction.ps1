@@ -9,8 +9,11 @@ nothing's listed in failures.json. This is a coverage check, not a content
 check - it tells you if something's missing or empty, not whether a table
 rendered nicely or an image is the right one. Spot-check those by eye.
 
-Run from the same folder you ran the extractor from (or pass -ExportDir):
+Asks which export folder to check - a folder name next to this script, or
+a full path anywhere (e.g. a shared drive holding several spaces' exports).
+Or pass -ExportDir, or set CONFLUENCE_EXPORT_DIR, to skip the question:
     .\confluence_verify_extraction.ps1
+    .\confluence_verify_extraction.ps1 -ExportDir "S:\Exports\confluence_export_TEAM"
 
 While Confluence is still reachable - especially useful if it's about to be
 decommissioned, since this is your last chance to check - add
@@ -25,8 +28,8 @@ Supported by Daniel - raise issues with him.
 
 param(
     # Where confluence_extractor.ps1 saved its output - same folder you'd
-    # point confluence_html_to_markdown.ps1 at.
-    [string]$ExportDir = "confluence_export",
+    # point confluence_html_to_markdown.ps1 at. Asked for if not given.
+    [string]$ExportDir,
     # Also fetch the live page list for the space from Confluence itself and
     # compare it against the manifest, catching pages the extractor never
     # recorded at all (a crash before it even started, a page added since,
@@ -86,9 +89,27 @@ function Get-NormalisedRelativePath {
     return $RelativePath.Replace('\', [System.IO.Path]::DirectorySeparatorChar).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
 }
 
-if (-not (Test-Path $ExportDir)) {
+# Asked every run unless -ExportDir is given, so checking each space's
+# export (saved under its own folder name by confluence_extractor.ps1, maybe
+# somewhere else entirely like a shared drive) just means answering this
+# differently. Set CONFLUENCE_EXPORT_DIR for unattended runs.
+if (-not $ExportDir) {
+    $exportDirHelp = @(
+        "Which extraction to check - the folder name you gave (or accepted",
+        "the default for) when running confluence_extractor.ps1 for that",
+        "space, or its full path if it's somewhere else (e.g. a shared drive).",
+        "Leave blank for: confluence_export"
+    )
+    $ExportDir = if ($env:CONFLUENCE_EXPORT_DIR) { $env:CONFLUENCE_EXPORT_DIR } else { (Read-HostWithHelp "Export folder to check (blank for 'confluence_export')" $exportDirHelp).Trim() }
+    # Explorer's "Copy as path" and dragging a folder into the window both
+    # wrap the path in quotes - strip them so either works.
+    $ExportDir = $ExportDir.Trim('"').Trim("'")
+    if (-not $ExportDir) { $ExportDir = "confluence_export" }
+}
+
+if (-not (Test-Path -LiteralPath $ExportDir)) {
     Write-Host "Can't find '$ExportDir' from here - run this from the folder"
-    Write-Host "that contains it, or pass -ExportDir C:\path\to\confluence_export."
+    Write-Host "that contains it, or give its full path instead."
     exit 1
 }
 
