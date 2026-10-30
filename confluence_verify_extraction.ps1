@@ -5,7 +5,8 @@ No install required.
 Checks what confluence_extractor.ps1 actually saved to disk, without
 needing Confluence at all:
 
-  - every page's folder and content.html exist and aren't empty
+  - every page's folder, content.html and rendered.html exist and aren't
+    empty
   - every attachment it recorded is on disk, isn't empty, and isn't a web
     page saved in place of the real file (what you get when a proxy or
     login page answers instead of Confluence)
@@ -295,6 +296,20 @@ foreach ($page in $manifest) {
         $body = Read-Utf8Text $htmlPath
     }
 
+    # The copy of the page as Confluence displayed it - only for exports
+    # made since the extractor started saving one. One that failed to save
+    # is already in failures.json, so only a missing/empty file that the
+    # manifest says WAS saved is flagged here.
+    if ($page.rendered_file) {
+        $renderedPath = Join-Path $pageFolder $page.rendered_file
+        if (-not (Test-Path -LiteralPath $renderedPath)) {
+            $missingOrEmptyContent += [PSCustomObject]@{ id = $page.id; title = $page.title; path = $renderedPath; reason = "rendered.html missing" }
+        }
+        elseif ((Get-Item -LiteralPath $renderedPath).Length -eq 0) {
+            $missingOrEmptyContent += [PSCustomObject]@{ id = $page.id; title = $page.title; path = $renderedPath; reason = "rendered.html empty (0 bytes)" }
+        }
+    }
+
     # @()-wrapped so a page with exactly one attachment is still a list.
     $pageAttachments = @($page.attachments | Where-Object { $_ })
     $savedHere = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -430,7 +445,7 @@ Write-Host "`n--- Must fix before Confluence is switched off ---"
 Write-IssueSummary "Failed during extraction - pages and attachments (failures.json)" $recordedFailures
 Write-IssueSummary "Duplicate page IDs in manifest" $duplicateIds
 Write-IssueSummary "Page folders missing on disk" $missingFolders
-Write-IssueSummary "content.html missing or empty" $missingOrEmptyContent
+Write-IssueSummary "content.html / rendered.html missing or empty" $missingOrEmptyContent
 Write-IssueSummary "Attachment files missing, empty or not the real file" $badAttachments
 Write-IssueSummary "Images/files a page shows or links to that weren't saved" $missingReferencedFiles
 

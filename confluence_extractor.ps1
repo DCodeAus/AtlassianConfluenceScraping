@@ -424,7 +424,7 @@ function Get-AllPagesInSpace {
         # Ask Confluence for this batch: which space, only actual pages
         # (not attachments etc), starting at $start, plus each page's
         # stored content, version number, parent-page info, and labels.
-        $uri = "$BaseUrl/rest/api/content?spaceKey=$SpaceKey&type=page&start=$start&limit=$PageSize&expand=body.storage,version,ancestors,metadata.labels"
+        $uri = "$BaseUrl/rest/api/content?spaceKey=$SpaceKey&type=page&start=$start&limit=$PageSize&expand=body.storage,version,ancestors,metadata.labels,history"
         $data = Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
 
         # @()-wrapped: when a batch has exactly one result, ConvertFrom-Json
@@ -454,11 +454,96 @@ function Get-AllPagesInSpace {
     return $allPages
 }
 
+# Links in the rendered page to this page's own attachments point back at
+# Confluence (.../download/attachments/<page id>/<file>?version=...), which
+# stops working once it's switched off - swap those for the copy saved in
+# images\ next to it.
+$attachmentUrlPattern = '(src|href)="[^"]*?/download/(?:attachments|thumbnails)/(\d+)/([^"?/]+)[^"]*"'
+
+function Convert-ToLocalAttachmentLinks {
+    param([string]$RenderedHtml, [string]$PageId, [array]$AttachmentRecords)
+    $saved = @{}
+    foreach ($record in $AttachmentRecords) { $saved[[string]$record.filename] = [string]$record.saved_as }
+    $swap = [System.Text.RegularExpressions.MatchEvaluator] {
+        param($match)
+        $name = [System.Uri]::UnescapeDataString([System.Net.WebUtility]::HtmlDecode($match.Groups[3].Value))
+        if ($match.Groups[2].Value -eq $PageId -and $saved.ContainsKey($name)) {
+            return "$($match.Groups[1].Value)=""images/$([System.Uri]::EscapeDataString($saved[$name]))"""
+        }
+        return $match.Value
+    }
+    return [regex]::Replace($RenderedHtml, $attachmentUrlPattern, $swap)
+}
+
+function Format-ConfluenceDate {
+    # PowerShell 7 quietly turns date-times in Confluence's JSON into its
+    # own DateTime, which then prints in this machine's local style -
+    # 4/3/2021, March or April? Put it back to the unambiguous
+    # 2021-03-04T10:00:00 form (same moment, this machine's time zone).
+    # Windows PowerShell 5.1 leaves them as text, which passes straight
+    # through untouched.
+    param($Value)
+    if ($Value -is [datetime]) {
+        return $Value.ToString("yyyy-MM-ddTHH:mm:ss.fffK", [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    return $Value
+}
+
+function Get-PageInfo {
+    # Who made the page and who last changed it, when, and its address -
+    # all already in what Confluence sent back, just not kept before.
+    param($Page)
+    $webui = $Page._links.webui
+    return [ordered]@{
+        url              = if ($webui) { "$($BaseUrl.TrimEnd('/'))$webui" } else { $null }
+        created          = Format-ConfluenceDate $Page.history.createdDate
+        created_by       = $Page.history.createdBy.displayName
+        last_modified    = Format-ConfluenceDate $Page.version.when
+        last_modified_by = $Page.version.by.displayName
+    }
+}
+
+function Get-RenderedPage {
+    # A complete web page around Confluence's rendered body, so it opens
+    # straight in a browser with the right characters - plus where it came
+    # from and who last touched it, so that's never lost either.
+    param([string]$Title, [string]$RenderedHtml, $PageInfo)
+    $escapedTitle = [System.Net.WebUtility]::HtmlEncode($Title)
+    $edited = if ($PageInfo.last_modified_by) { [System.Net.WebUtility]::HtmlEncode($PageInfo.last_modified_by) } else { "unknown" }
+    $when = if ($PageInfo.last_modified) { ([string]$PageInfo.last_modified).Substring(0, [Math]::Min(10, ([string]$PageInfo.last_modified).Length)) } else { "unknown date" }
+    $url = [System.Net.WebUtility]::HtmlEncode([string]$PageInfo.url)
+    return "<!DOCTYPE html>`n<html>`n<head>`n<meta charset=""utf-8"">`n<title>$escapedTitle</title>`n</head>`n<body>`n<h1>$escapedTitle</h1>`n<p><em>Last edited by $edited on $when. Originally at <a href=""$url"">$url</a></em></p>`n$RenderedHtml`n</body>`n</html>`n"
+}
+
+function Write-PagesIndex {
+    # One row per page, for finding your way around the export (or the
+    # archive it ends up in) in Excel. Saved with a BOM so Excel reads
+    # accented characters right.
+    param([array]$Entries, [string]$Path)
+    $rows = foreach ($entry in $Entries) {
+        [PSCustomObject][ordered]@{
+            id               = $entry.id
+            title            = $entry.title
+            parent_title     = $entry.parent_title
+            url              = $entry.url
+            created          = Format-ConfluenceDate $entry.created
+            created_by       = $entry.created_by
+            last_modified    = Format-ConfluenceDate $entry.last_modified
+            last_modified_by = $entry.last_modified_by
+            version          = $entry.version
+            labels           = (@($entry.labels | Where-Object { $_ }) -join ", ")
+            folder           = $entry.folder
+        }
+    }
+    $csv = (@($rows) | ConvertTo-Csv -NoTypeInformation) -join "`r`n"
+    [System.IO.File]::WriteAllText($Path, $csv + "`r`n", (New-Object System.Text.UTF8Encoding($true)))
+}
+
 function Get-SinglePage {
     # Fetches just one specific page by its ID, with the same extra
     # information (content, version, parent, labels) as the whole-space path.
     param([string]$PageId)
-    $uri = "$BaseUrl/rest/api/content/${PageId}?expand=body.storage,version,ancestors,metadata.labels"
+    $uri = "$BaseUrl/rest/api/content/${PageId}?expand=body.storage,version,ancestors,metadata.labels,history"
     Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
 }
 
@@ -731,6 +816,23 @@ foreach ($page in $pages) {
             }
         }
 
+        # The page as Confluence displays it, with macros filled in. Its own
+        # request, after the attachments (so its image links can be pointed
+        # at the saved copies): a macro that fails to render only costs this
+        # page's rendered copy, not the page itself.
+        $pageInfo = Get-PageInfo $page
+        $renderedFile = $null
+        try {
+            $rendered = Invoke-WithRetry { Invoke-ConfluenceApi -Uri "$BaseUrl/rest/api/content/${pageId}?expand=body.export_view" }
+            $renderedHtml = Convert-ToLocalAttachmentLinks -RenderedHtml ([string]$rendered.body.export_view.value) -PageId $pageId -AttachmentRecords $attachmentRecords
+            Set-Utf8NoBomContent -Path (Join-Path $pageFolder "rendered.html") -Value (Get-RenderedPage -Title $title -RenderedHtml $renderedHtml -PageInfo $pageInfo)
+            $renderedFile = "rendered.html"
+        }
+        catch {
+            Write-Host "    Warning: couldn't save the rendered copy of this page:" $_.Exception.Message
+            $failures += [PSCustomObject]@{ id = $pageId; title = $title; error = $_.Exception.Message; renderedView = $true; reason = "rendered copy (rendered.html) not saved" }
+        }
+
         # "ancestors" comes back ordered root-first, so the immediate parent
         # (if any) is the last one - used to build the "Related pages"
         # parent/children links in the SharePoint export.
@@ -756,7 +858,13 @@ foreach ($page in $pages) {
             parent_id    = if ($parent) { $parent.id } else { $null }
             parent_title = if ($parent) { $parent.title } else { $null }
             labels       = $labels
-            version      = $page.version.number
+            version          = $page.version.number
+            rendered_file    = $renderedFile
+            url              = $pageInfo.url
+            created          = $pageInfo.created
+            created_by       = $pageInfo.created_by
+            last_modified    = $pageInfo.last_modified
+            last_modified_by = $pageInfo.last_modified_by
         }
     }
     catch {
@@ -856,17 +964,28 @@ if ($userDisplayNames.Count -gt 0) {
 # (the documented single-page mode).
 Set-Utf8NoBomContent -Path $manifestPath -Value (ConvertTo-Json -InputObject $manifest -Depth 10)
 
-$pageFailures = @($failures | Where-Object { -not $_.attachmentName })
+$pagesIndexPath = Join-Path $OutputDir "pages_index.csv"
+try {
+    Write-PagesIndex -Entries $manifest -Path $pagesIndexPath
+}
+catch {
+    # Most likely open in Excel right now, which locks it. Everything in it
+    # is in manifest.json too, so not worth stopping over.
+    Write-Host "Couldn't write $pagesIndexPath - $($_.Exception.Message)"
+}
+
 $attachmentFailures = @($failures | Where-Object { $_.attachmentName })
+$renderedFailures = @($failures | Where-Object { $_.renderedView })
+$pageFailures = @($failures | Where-Object { -not $_.attachmentName -and -not $_.renderedView })
 Write-Host "`nDone. $($manifest.Count) pages in the export."
 
 if ($failures.Count -gt 0) {
     # Print a short summary of anything that failed - this always happens,
     # regardless of whether saving the file below works, so the list below
     # is never the only copy of this information.
-    Write-Host "$($pageFailures.Count) page(s) and $($attachmentFailures.Count) attachment(s) failed:"
+    Write-Host "$($pageFailures.Count) page(s), $($attachmentFailures.Count) attachment(s) and $($renderedFailures.Count) rendered copy/copies failed:"
     foreach ($fail in $failures) {
-        $what = if ($fail.attachmentName) { "attachment '$($fail.attachmentName)' on " } else { "" }
+        $what = if ($fail.attachmentName) { "attachment '$($fail.attachmentName)' on " } elseif ($fail.renderedView) { "rendered copy of " } else { "" }
         Write-Host "  - $what$($fail.title) (id $($fail.id)): $($fail.error)"
     }
     try {
@@ -914,9 +1033,20 @@ $readmeLines = @(
     "- Attachments: $totalAttachments"
 )
 if ($failures.Count -gt 0) {
-    $readmeLines += "- Failed to extract: $($pageFailures.Count) page(s), $($attachmentFailures.Count) attachment(s) (see failures.json)"
+    $readmeLines += "- Failed to extract: $($pageFailures.Count) page(s), $($attachmentFailures.Count) attachment(s), $($renderedFailures.Count) rendered copy/copies (see failures.json)"
 }
 $readmeLines += @(
+    ""
+    "## What's in here"
+    ""
+    "- ``pages_index.csv`` - every page: title, original address, who created"
+    "  and last edited it and when. Open it in Excel to find your way around."
+    "- ``pages/<id>_<title>/rendered.html`` - the page as Confluence displayed"
+    "  it, including anything macros pulled in. Open it in any browser."
+    "- ``pages/<id>_<title>/content.html`` - the page's raw content, as"
+    "  Confluence stored it (what the Markdown conversion works from)."
+    "- ``pages/<id>_<title>/images/`` - the page's attachments."
+    "- ``manifest.json`` - the same details as the index, for the scripts."
     ""
     "## Why Markdown?"
     ""

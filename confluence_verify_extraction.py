@@ -5,7 +5,8 @@ Checks what confluence_extractor.py (or the .ps1 version - manifests from
 either are compatible) actually saved to disk, without needing Confluence
 at all:
 
-  - every page's folder and content.html exist and aren't empty
+  - every page's folder, content.html and rendered.html exist and aren't
+    empty
   - every attachment it recorded is on disk, isn't empty, and isn't a web
     page saved in place of the real file (what you get when a proxy or
     login page answers instead of Confluence)
@@ -264,6 +265,17 @@ def main():
             with open(html_path, "r", encoding="utf-8-sig", errors="replace") as f:
                 body = f.read()
 
+        # The copy of the page as Confluence displayed it - only for exports
+        # made since the extractor started saving one. One that failed to
+        # save is already in failures.json, so only a missing/empty file
+        # that the manifest says WAS saved is flagged here.
+        if page.get("rendered_file"):
+            rendered_path = os.path.join(page_folder, page["rendered_file"])
+            if not os.path.isfile(rendered_path):
+                missing_or_empty_content.append({"id": page_id, "title": page["title"], "path": rendered_path, "reason": "rendered.html missing"})
+            elif os.path.getsize(rendered_path) == 0:
+                missing_or_empty_content.append({"id": page_id, "title": page["title"], "path": rendered_path, "reason": "rendered.html empty (0 bytes)"})
+
         for attachment in page.get("attachments", []):
             att_path = os.path.join(page_folder, "images", attachment["saved_as"])
             problem = None
@@ -355,7 +367,7 @@ def main():
     print_issue_summary("Failed during extraction - pages and attachments (failures.json)", recorded_failures)
     print_issue_summary("Duplicate page IDs in manifest", duplicate_ids)
     print_issue_summary("Page folders missing on disk", missing_folders)
-    print_issue_summary("content.html missing or empty", missing_or_empty_content)
+    print_issue_summary("content.html / rendered.html missing or empty", missing_or_empty_content)
     print_issue_summary("Attachment files missing, empty or not the real file", bad_attachments)
     print_issue_summary("Images/files a page shows or links to that weren't saved", missing_referenced_files)
 

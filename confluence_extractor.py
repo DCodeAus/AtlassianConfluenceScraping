@@ -5,6 +5,13 @@ Pulls every page in a space, or just one page if you give it a page ID when
 asked: dumps the raw HTML (body.storage) plus any attached images, so it's
 ready for the Markdown conversion step next.
 
+Also saves each page as Confluence actually displays it (rendered.html, open
+it in any browser) - that's the only copy of anything a macro pulls in from
+somewhere else (an included page, a page tree, often a Jira list), which the
+raw HTML only has a reference to. And records who created and last edited
+each page, when, and its original address, in the manifest and in a
+pages_index.csv you can open in Excel.
+
     python confluence_extractor.py
 
 Asks for your Confluence site address and space key every time it runs,
@@ -29,8 +36,10 @@ as its own repo for a teammate.
 """
 
 import base64
+import csv
 import datetime
 import getpass
+import html
 import json
 import os
 import re
@@ -302,7 +311,7 @@ def get_all_pages_in_space():
                 "type": "page",
                 "start": start,
                 "limit": PAGE_SIZE,
-                "expand": "body.storage,version,ancestors,metadata.labels",
+                "expand": "body.storage,version,ancestors,metadata.labels,history",
             },
         )
 
@@ -324,7 +333,7 @@ def get_all_pages_in_space():
 
 
 def get_single_page(page_id):
-    return api_get(f"/rest/api/content/{page_id}", {"expand": "body.storage,version,ancestors,metadata.labels"})
+    return api_get(f"/rest/api/content/{page_id}", {"expand": "body.storage,version,ancestors,metadata.labels,history"})
 
 
 # @mentions in the storage HTML reference a user by an opaque userkey (or
@@ -343,6 +352,72 @@ def resolve_user_display_name(user_key=None, username=None):
         return data.get("displayName")
     except Exception:
         return None
+
+
+# Links in the rendered page to this page's own attachments point back at
+# Confluence (.../download/attachments/<page id>/<file>?version=...), which
+# stops working once it's switched off - swap those for the copy saved in
+# images/ next to it.
+ATTACHMENT_URL_PATTERN = re.compile(r'(src|href)="[^"]*?/download/(?:attachments|thumbnails)/(\d+)/([^"?/]+)[^"]*"')
+
+
+def point_at_local_copies(rendered_html, page_id, attachment_records):
+    saved = {record["filename"]: record["saved_as"] for record in attachment_records}
+
+    def swap(match):
+        name = urllib.parse.unquote(html.unescape(match.group(3)))
+        if match.group(2) == page_id and name in saved:
+            return f'{match.group(1)}="images/{urllib.parse.quote(saved[name])}"'
+        return match.group(0)
+
+    return ATTACHMENT_URL_PATTERN.sub(swap, rendered_html)
+
+
+def build_rendered_page(title, rendered_html, page_info):
+    """A complete web page around Confluence's rendered body, so it opens
+    straight in a browser with the right characters - plus where it came
+    from and who last touched it, so that's never lost either."""
+    escaped_title = html.escape(title)
+    edited = page_info["last_modified_by"] or "unknown"
+    when = (page_info["last_modified"] or "")[:10] or "unknown date"
+    url = html.escape(page_info["url"] or "")
+    return (
+        "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n"
+        f"<title>{escaped_title}</title>\n</head>\n<body>\n"
+        f"<h1>{escaped_title}</h1>\n"
+        f"<p><em>Last edited by {html.escape(edited)} on {when}. "
+        f"Originally at <a href=\"{url}\">{url}</a></em></p>\n"
+        f"{rendered_html}\n</body>\n</html>\n"
+    )
+
+
+def get_page_info(page):
+    """Who made the page and who last changed it, when, and its address -
+    all already in what Confluence sent back, just not kept before."""
+    version = page.get("version", {})
+    history = page.get("history", {})
+    webui = page.get("_links", {}).get("webui", "")
+    return {
+        "url": f"{BASE_URL.rstrip('/')}{webui}" if webui else None,
+        "created": history.get("createdDate"),
+        "created_by": history.get("createdBy", {}).get("displayName"),
+        "last_modified": version.get("when"),
+        "last_modified_by": version.get("by", {}).get("displayName"),
+    }
+
+
+def write_pages_index(manifest, path):
+    """One row per page, for finding your way around the export (or the
+    archive it ends up in) in Excel. utf-8-sig so Excel reads accented
+    characters right."""
+    columns = ["id", "title", "parent_title", "url", "created", "created_by", "last_modified", "last_modified_by", "version", "labels", "folder"]
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_ALL)
+        writer.writerow(columns)
+        for entry in manifest:
+            row = [entry.get(column) for column in columns]
+            row[columns.index("labels")] = ", ".join(entry.get("labels") or [])
+            writer.writerow(["" if value is None else value for value in row])
 
 
 def get_attachments_for_page(page_id):
@@ -460,6 +535,23 @@ def main():
 
                     time.sleep(REQUEST_DELAY_SECONDS)
 
+            # The page as Confluence displays it, with macros filled in. Its
+            # own request, after the attachments (so its image links can be
+            # pointed at the saved copies): a macro that fails to render
+            # only costs this page's rendered copy, not the page itself.
+            page_info = get_page_info(page)
+            rendered_file = None
+            try:
+                rendered = api_get(f"/rest/api/content/{page_id}", {"expand": "body.export_view"})
+                rendered_html = rendered.get("body", {}).get("export_view", {}).get("value", "")
+                rendered_html = point_at_local_copies(rendered_html, page_id, attachment_records)
+                with open(os.path.join(page_folder, "rendered.html"), "w", encoding="utf-8") as f:
+                    f.write(build_rendered_page(title, rendered_html, page_info))
+                rendered_file = "rendered.html"
+            except Exception as rendered_err:
+                print(f"    Warning: couldn't save the rendered copy of this page: {rendered_err}")
+                failures.append({"id": page_id, "title": title, "error": str(rendered_err), "renderedView": True, "reason": "rendered copy (rendered.html) not saved"})
+
             # "ancestors" comes back ordered root-first, so the immediate
             # parent (if any) is the last one - used to build the
             # "Related pages" parent/children links in the SharePoint export.
@@ -478,6 +570,8 @@ def main():
                 "parent_title": parent["title"] if parent else None,
                 "labels": labels,
                 "version": page.get("version", {}).get("number"),
+                "rendered_file": rendered_file,
+                **page_info,
             })
 
         except Exception as e:
@@ -538,13 +632,22 @@ def main():
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
-    page_failures = [fail for fail in failures if "attachmentName" not in fail]
+    pages_index_path = os.path.join(OUTPUT_DIR, "pages_index.csv")
+    try:
+        write_pages_index(manifest, pages_index_path)
+    except Exception as e:
+        # Most likely open in Excel right now, which locks it. Everything
+        # in it is in manifest.json too, so not worth stopping over.
+        print(f"Couldn't write {pages_index_path} - {e}")
+
     attachment_failures = [fail for fail in failures if "attachmentName" in fail]
+    rendered_failures = [fail for fail in failures if fail.get("renderedView")]
+    page_failures = [fail for fail in failures if fail not in attachment_failures and fail not in rendered_failures]
     print(f"\nDone. {len(manifest)} pages in the export.")
     if failures:
-        print(f"{len(page_failures)} page(s) and {len(attachment_failures)} attachment(s) failed:")
+        print(f"{len(page_failures)} page(s), {len(attachment_failures)} attachment(s) and {len(rendered_failures)} rendered copy/copies failed:")
         for fail in failures:
-            what = f"attachment '{fail['attachmentName']}' on " if "attachmentName" in fail else ""
+            what = f"attachment '{fail['attachmentName']}' on " if "attachmentName" in fail else "rendered copy of " if fail.get("renderedView") else ""
             print(f"  - {what}{fail['title']} (id {fail['id']}): {fail['error']}")
         with open(failures_path, "w", encoding="utf-8") as f:
             json.dump(failures, f, indent=2)
@@ -579,8 +682,19 @@ def main():
         f"- Attachments: {total_attachments}",
     ]
     if failures:
-        readme_lines.append(f"- Failed to extract: {len(page_failures)} page(s), {len(attachment_failures)} attachment(s) (see failures.json)")
+        readme_lines.append(f"- Failed to extract: {len(page_failures)} page(s), {len(attachment_failures)} attachment(s), {len(rendered_failures)} rendered copy/copies (see failures.json)")
     readme_lines += [
+        "",
+        "## What's in here",
+        "",
+        "- `pages_index.csv` - every page: title, original address, who created",
+        "  and last edited it and when. Open it in Excel to find your way around.",
+        "- `pages/<id>_<title>/rendered.html` - the page as Confluence displayed",
+        "  it, including anything macros pulled in. Open it in any browser.",
+        "- `pages/<id>_<title>/content.html` - the page's raw content, as",
+        "  Confluence stored it (what the Markdown conversion works from).",
+        "- `pages/<id>_<title>/images/` - the page's attachments.",
+        "- `manifest.json` - the same details as the index, for the scripts.",
         "",
         "## Why Markdown?",
         "",

@@ -120,13 +120,13 @@ python confluence_verify_extraction.py
 | Must fix | |
 |---|---|
 | Failed during extraction | Pages *and* attachment downloads that failed (`failures.json`) |
-| Page folders / `content.html` missing or empty | |
+| Page folders, `content.html` or `rendered.html` missing or empty | A rendered copy that failed to save is listed under "Failed during extraction" |
 | Attachment files missing, empty, or not the real file | Including a web page saved in place of the real file - what you get when a proxy or login page answers instead of Confluence |
 | Images/files a page shows that weren't saved | Including ones that really live on a *different* page (or space), which don't come down with this one |
 
 | For your information | |
 |---|---|
-| Macros whose content lives elsewhere | Jira lists, "include page", page trees and similar show content that isn't stored in the page, so only the macro is in the export. Open those pages in Confluence and copy out anything you need. |
+| Macros whose content lives elsewhere | Jira lists, "include page", page trees and similar show content that isn't stored in the page, so the raw `content.html` only has the macro. The page's `rendered.html` has what it showed - open it and check that came through, since a few macros only fill in once a browser runs them. |
 | Links to pages not in this export | The link text survives, the page it pointed at isn't part of this export |
 | Page folders the manifest doesn't list | Usually left over from an earlier run - invisible to the converter and other scripts |
 
@@ -192,7 +192,7 @@ Once the auth test passes, run the matching extractor (`confluence_extractor.py`
 
 A brief network blip won't even show up as a failure, connection errors and 5xx responses get retried a couple of times with a short backoff before giving up. If a page still fails after that (odd permissions, a persistent error), it won't kill the whole run, that page just gets logged to `failures.json` at the end so you can look at it separately.
 
-Everything lands in a `confluence_export` folder (it'll ask - see below), one subfolder per page, each with its own `content.html` and `images/`. It also writes a `README.md` right into that folder, recording where it came from, who ran it, the date, and how many pages/attachments ended up there - handy if this export folder ever leaves your machine (e.g. uploaded as its own repo for a teammate), since then it doesn't depend on anyone remembering, or still having this script around.
+Everything lands in a `confluence_export` folder (it'll ask - see below), one subfolder per page, each with its own `content.html`, `rendered.html` and `images/`. `content.html` is the page's raw content, which the Markdown conversion works from. `rendered.html` is the page as Confluence displayed it - open it in any browser - and it's the only copy of anything a macro pulled in from elsewhere (an included page, a page tree, often a Jira list), since the raw content only has a reference to it. Its images point at the saved copies in `images/`, so it still works once Confluence is gone. There's also a `pages_index.csv` with one row per page - title, original address, who created and last edited it and when - for finding your way around the export in Excel. It also writes a `README.md` right into that folder, recording where it came from, who ran it, the date, and how many pages/attachments ended up there - handy if this export folder ever leaves your machine (e.g. uploaded as its own repo for a teammate), since then it doesn't depend on anyone remembering, or still having this script around.
 
 Only want one page instead of a whole space, say someone's personal space? Alongside the username/password prompts, it'll also ask for a page ID - leave it blank to pull the whole space as normal, or paste one in (grabbed straight from the page's URL, `.../pages/123456789/Page+Title`) to pull just that page instead. `SPACE_KEY` is ignored when you give it a page ID. Needs no more access than opening the page normally does. Give it the same export folder as the rest of that space and it updates that one page in place, keeping every other page already there - that's how you fix individual pages the checks flag. For unattended runs, set `CONFLUENCE_PAGE_ID` as an environment variable to skip the prompt, same as the credentials.
 
