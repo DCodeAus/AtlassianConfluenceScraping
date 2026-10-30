@@ -84,6 +84,10 @@ If an older version of a script ever did have real credentials typed into it and
 | `confluence_extractor.ps1` | Same extractor, PowerShell version. Use this one if Python keeps tripping over the org's certificate. |
 | `confluence_verify_extraction.py` | Checks what actually got saved to disk against the extractor's own `manifest.json` - missing/empty `content.html`, missing attachments, anything in `failures.json`. Add `--check-live-space` to also compare against Confluence's own live page list, while it's still reachable. See "Checking an extraction is complete" below. |
 | `confluence_verify_extraction.ps1` | Same check, PowerShell version. |
+| `confluence_verify_live_content.py` | The thorough one: re-fetches every extracted page from Confluence and compares it to what got saved - content that doesn't match, pages edited since you extracted, attachments that never downloaded. See "Checking an extraction against live Confluence" below. |
+| `confluence_verify_live_content.ps1` | Same check, PowerShell version. |
+| `confluence_export_to_git.py` | Turns a finished export folder into its own git repo, ready to push somewhere your team can get at it. See "Putting an export into its own git repo" below. |
+| `confluence_export_to_git.ps1` | Same thing, PowerShell version. |
 | `confluence_html_to_markdown.ps1` | Takes everything the extractor pulled and turns it into proper Markdown, images and all. Routes each page to Azure or SharePoint based on how you've classified it in a CSV, with a built-in check for each platform's file name limits. |
 | `confluence_html_to_markdown.py` | Same conversion and routing, Python standard library only. Use this one if you don't have PowerShell (e.g. extracted on Mac/Linux). |
 | `confluence_sharepoint_paste.ps1` | Turns each page classified "sharepoint" into a standalone .html file ready to copy-paste into a new SharePoint page. See "Getting pages into SharePoint" below. |
@@ -123,6 +127,45 @@ python confluence_verify_extraction.py --check-live-space
 This asks for the same site address/space key/login as the extractor did (the PowerShell version also takes `-UseDefaultCredentials`, same as there). It flags live pages the manifest never recorded (genuinely missing - re-run the extractor, or just that one page by ID), and separately lists manifest pages no longer live (usually just deleted or moved since you extracted - not itself a problem).
 
 This is a coverage check, not a content check: it tells you something's missing or empty, not whether a table rendered nicely or an image is the right one. Still worth spot-checking a handful of pages by eye, especially ones with big tables or lots of attachments.
+
+## Checking an extraction against live Confluence
+
+`confluence_verify_live_content.py` / `.ps1` is the thorough version of the check above: instead of trusting the manifest, it re-fetches every extracted page from Confluence and compares it to what's on disk. Same folder question as above, then your site address and login:
+
+```
+python confluence_verify_live_content.py
+.\confluence_verify_live_content.ps1
+```
+
+For each page it tells you one of:
+
+- **matches** - saved `content.html` is exactly what Confluence holds (line endings aside).
+- **content differs** - same version, but the saved copy doesn't match, i.e. the save itself went wrong (cut off, garbled). Re-extract that page. The report shows where the two first differ, with a snippet of each, so you can see what kind of wrong it is.
+- **edited since** - someone changed the page in Confluence after you extracted it, so your copy is out of date rather than broken. Re-extract if you want the latest.
+- **attachment not saved** - an attachment on the live page that isn't in the export. The extractor only warns and moves on when one download fails, and those never make it into the manifest, so this is the only check that catches them.
+- **no longer live** - deleted or moved since. Usually fine.
+
+It only reads from Confluence and only writes `live_content_report.json` into the export folder - nothing else in there gets touched. It's one request per page plus one for its attachments, so it takes about as long as the extraction did. Like the check above, it's worth running once before Confluence gets switched off. If you've used `repair_garbled_text`'s `-Force` strip on an export, those pages will show as differing, which is correct - the strip removed characters the live page still has.
+
+## Putting an export into its own git repo
+
+Want to hand an export to someone else, or keep it somewhere safer than your own drive? `confluence_export_to_git.py` / `.ps1` sets one export folder up as its own git repo, ready to push:
+
+```
+python confluence_export_to_git.py
+.\confluence_export_to_git.ps1
+```
+
+It asks which folder (the raw export or the converted Markdown one, whichever you want to hand over - a full path works too), then sets up the repo, adds a `.gitignore` for the report and backup files that don't belong in it, asks for your name/email for commits if git doesn't already have one, warns about any file too big for GitHub/Azure DevOps (over 50 MB), stages everything and offers to make the first commit. Last, it asks for the URL of the empty repo to push to - create that first (empty, no README) on GitHub, Azure DevOps or wherever your team keeps things.
+
+It never pushes for you. Pushing is what actually puts the content somewhere else, so that's always one command left for you to run once you've checked the destination is private and allowed to hold it:
+
+```
+cd "path\to\confluence_export_TEAM"
+git push -u origin main
+```
+
+Run it again after re-extracting and it'll reuse the same repo and commit the changes as an update. Needs [git](https://git-scm.com) installed. The export folder's own `README.md` (written by the extractor) says where it came from, so the repo makes sense to whoever opens it.
 
 ## Pulling everything down
 
@@ -285,6 +328,8 @@ New to this? Here's the order to actually run things in, start to finish. Everyt
    .\confluence_extractor.ps1
    ```
    This is the one that actually talks to Confluence and downloads everything - content, images, attachments. Expect it to take a few minutes for a big space, that's normal. See "Pulling everything down" above for what the output looks like while it runs.
+
+   Then check it got everything: `.\confluence_verify_extraction.ps1` for the quick check, or `.\confluence_verify_live_content.ps1` to compare every page against live Confluence. See "Checking an extraction is complete" above.
 
 5. **Convert it to Markdown, and classify each page.** Run:
    ```
