@@ -72,6 +72,8 @@ Python scripts hide the password using `getpass`, PowerShell scripts do the same
 
 If you ever want to automate this properly (a scheduled job, say) where being asked everything every time isn't practical, set `CONFLUENCE_BASE_URL`, `CONFLUENCE_SPACE_KEY`, `CONFLUENCE_USERNAME`, and `CONFLUENCE_PASSWORD` as environment variables before running the script and the prompts are skipped. Just don't ever go back to hardcoding any of it in the file.
 
+Once an export exists, the scripts that come after the extractor don't need asking again: the extractor saves the site address and space key (never your login) into the export folder as `export_source.json`, and the checking scripts pick them up from there.
+
 If an older version of a script ever did have real credentials typed into it and pushed to Git, treat that password as burnt and change it. Deleting it from the file afterwards doesn't remove it from history.
 
 ## What's in here
@@ -96,6 +98,7 @@ If an older version of a script ever did have real credentials typed into it and
 | `confluence_table_to_csv.py` | Same thing, Python standard library only. |
 | `repair_garbled_text.ps1` | Fixes up `content.html`/`content.md` files already extracted with the old `.ps1` encoding bug (garbled accents/quotes/dashes, see Troubleshooting below). Only needed once, for content pulled before that fix landed. |
 | `repair_garbled_text.py` | Same repair, Python standard library only. |
+| `confluence_common.py` / `confluence_common.ps1` | Not something you run - the code every other script shares: asking questions (with `?` help), finding an export folder and what it came from, logging in and talking to Confluence (retries, batching through long lists, SSL settings), and reading Confluence's page HTML. Each script loads it from the same folder, so **keep all the files together** - one script copied out on its own won't run, and says so. A fix made here fixes every script at once. |
 | `check_script_encoding.ps1` | Maintenance tool, not part of the pipeline: scans every `.ps1` file in the folder for the exact bug that broke `repair_garbled_text.ps1` in real use (see Troubleshooting below) - a missing UTF-8 BOM, or a literal special character sitting directly in code rather than built from a character code. Run it after editing any `.ps1` file here, before committing. |
 | `runningPythonScriptsInVSCode.md` | If Python in VS Code is giving you grief (PATH errors, nothing happening when you hit run), this walks through it. |
 | `settingUpPowerAutomate.md` | First-time walkthrough for trying Power Automate as a way past the Entra ID wall blocking real SharePoint page automation. See "If you want to automate the SharePoint side further" below. |
@@ -105,6 +108,18 @@ If an older version of a script ever did have real credentials typed into it and
 It logs in with your normal Confluence username and password, asks for one page from whichever space you point it at, and tells you straight away whether that worked. If it did, you're clear to run the real extractor. If you get a 401 or 403 or an SSL error, it'll tell you which and point at the fix, see Troubleshooting below.
 
 Worth running this before touching the full extractor, no point discovering an auth problem 200 pages into a 500-page run.
+
+### Who you're logged in as
+
+Every script that talks to Confluence (the auth test, the extractor and both checks) prints who Confluence thinks you are before it does anything else:
+
+```
+Signed in to Confluence as: Dan Smith
+```
+
+That matters because some Confluence setups don't turn a login away when it doesn't work - they let you in as an **anonymous visitor** instead. You still get every page anyone can see without logging in, so it looks like it worked, but anything that needs a login is quietly left out - and the checking scripts can't spot it either, since they're anonymous too. If that happens you'll see a `WARNING: Confluence doesn't know who you are` and be asked whether to carry on. Running unattended (nobody at the keyboard to answer), it warns and carries on rather than waiting - set `CONFLUENCE_ALLOW_ANONYMOUS=1` to get that same behaviour at the keyboard, if an anonymous copy of an open space really is what you want.
+
+This happened for real with `-UseDefaultCredentials` (the Windows-login option): it got through the network but Confluence treated it as nobody, and two login-only pages were missed out of 510. If you see the warning, try the other way of logging in - typing your username and password instead of `-UseDefaultCredentials`, or the other way round.
 
 ## Checking an extraction is complete
 
@@ -328,7 +343,12 @@ pulls every table off that one page and writes each as a CSV into `confluence_ta
 
 New to this? Here's the order to actually run things in, start to finish. Everything below shows the PowerShell (`.ps1`) command - if you're on Mac/Linux or don't have PowerShell, swap each one for the matching `.py` file (e.g. `python confluence_extractor.py` instead of `.\confluence_extractor.ps1`), same order, same steps.
 
-1. **Grab this repo**, somewhere you can find it again. Easiest way: on this repo's GitHub page, click the green **Code** button → **Download ZIP**, then unzip it. If you've got [Git](https://git-scm.com/downloads) installed and want to be able to pull future updates instead of re-downloading, `git clone` the repo's URL from that same **Code** button into a folder instead (see "Getting pages into Azure DevOps Wiki" below for a full walkthrough of installing/using git if you've never done it).
+1. **Grab this repo**, somewhere you can find it again - the whole thing, not just the script you want, since they all share `confluence_common.py`/`.ps1` and need it sitting next to them. Easiest way: on this repo's GitHub page, click the green **Code** button → **Download ZIP**, then unzip it. On Windows, run this once in the unzipped folder too, or PowerShell may refuse to load the shared file (Windows marks anything downloaded as "from the internet"):
+   ```
+   Get-ChildItem *.ps1 | Unblock-File
+   ```
+
+   If you've got [Git](https://git-scm.com/downloads) installed and want to be able to pull future updates instead of re-downloading, `git clone` the repo's URL from that same **Code** button into a folder instead (see "Getting pages into Azure DevOps Wiki" below for a full walkthrough of installing/using git if you've never done it).
 
 2. **Test you can actually connect.** Run:
    ```
@@ -373,8 +393,11 @@ Hit the encoding bug below in the wild once - [whatHappenedEncodingBugPostmortem
 
 | What you're seeing | What's actually going on |
 |---|---|
-| `SSL certificate verify failed` | Confluence is using an internal cert Python doesn't automatically trust. Export it (browser padlock icon, or `certmgr.msc` if that's not locked down) and point `INTERNAL_CA_PATH` in the script at the exported file. Full steps are in the script's own comments. |
-| `Basic constraints of CA cert marked not critical` | This one's not on you, the org's cert itself is missing a flag Python's SSL library insists on, even though browsers and PowerShell don't care. Quickest fix is switching to the `.ps1` version, which doesn't hit this at all. Or set `VERIFY_SSL = False` for a short-term test, not something to leave on permanently. |
+| `SSL certificate verify failed` | Confluence is using an internal cert Python doesn't automatically trust. Export it (browser padlock icon, or `certmgr.msc` if that's not locked down) and point `INTERNAL_CA_PATH` in `confluence_common.py` at the exported file (or set the `CONFLUENCE_CA_FILE` environment variable to its path, no editing needed). Every Python script reads it from there, so it's a one-time fix. Full steps are in that file's comments. |
+| `Basic constraints of CA cert marked not critical` | This one's not on you, the org's cert itself is missing a flag Python's SSL library insists on, even though browsers and PowerShell don't care. Quickest fix is switching to the `.ps1` version, which doesn't hit this at all. Or set `VERIFY_SSL = False` in `confluence_common.py` for a short-term test, not something to leave on permanently. |
+| `Can't find confluence_common.py` (or `.ps1`) | The script's been copied somewhere on its own. Every script needs the shared `confluence_common` file sitting in the same folder - download the whole repo (see "Getting started" below). If the file IS there and PowerShell still won't load it, see the next row. |
+| PowerShell says `confluence_common.ps1` "is not digitally signed" or "cannot be loaded" | Windows has marked the downloaded files as "from the internet". Run `Get-ChildItem *.ps1 \| Unblock-File` once in the folder. |
+| `WARNING: Confluence doesn't know who you are` | Your login wasn't used - Confluence let you in as an anonymous visitor, so pages that need a login will be missing. See "Who you're logged in as" above. |
 | `401 Unauthorized` | Wrong username/password, or the org's set up SSO in a way that blocks plain API logins. |
 | `403 Forbidden` | Login's fine, you just don't have read access to that particular space. |
 | A `401`, or a confusing JSON-parsing error mentioning an unexpected `<` character (`confluence_auth_test.ps1`/`confluence_extractor.ps1` only) | Some Confluence setups log you in via your Windows login automatically (Integrated Windows Authentication) instead of a separate username/password - the `<` means the response wasn't JSON at all, it was an HTML login page the script doesn't know how to handle. Confirmed fix for this exact case: run `.\confluence_auth_test.ps1 -UseDefaultCredentials` first to check (skips the username/password prompts, uses your current Windows login instead), then `.\confluence_extractor.ps1 -UseDefaultCredentials` once that confirms it. PowerShell only - there's no equivalent for the Python scripts. |
@@ -403,6 +426,10 @@ Hit the encoding bug below in the wild once - [whatHappenedEncodingBugPostmortem
 
 All of this uses the same read access you already have browsing Confluence normally, nothing here needs admin rights or anything elevated, just the ability to open the pages in the first place.
 
-## Supported by
+## Changing the scripts
 
-Daniel. If something's broken or doesn't make sense, that's who to ask.
+Every script comes in a Python and a PowerShell version that do the same thing - change one, change the other to match. Anything more than one script needs (asking a question, logging in, reading an export folder) lives in `confluence_common.py`/`.ps1` rather than being copied into each script, so look there first. After editing any `.ps1` file, run `.\check_script_encoding.ps1` before committing (see "When something goes wrong" for why).
+
+## Questions and problems
+
+Something broken, or doesn't make sense? [Raise an issue](https://github.com/DCodeAus/AtlassianConfluenceScraping/issues) - say which script, which version (Python or PowerShell), and paste what it printed (with your site address and anything private taken out).
