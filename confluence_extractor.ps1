@@ -57,7 +57,8 @@ cmdlets follow you), but every file write then looked for that folder in
 the wrong place (.NET didn't). Already fixed below - grab a fresh copy
 if you're still seeing this.
 
-Supported by Daniel - raise issues with him.
+Something broken or unclear? Raise an issue at
+https://github.com/DCodeAus/AtlassianConfluenceScraping/issues
 #>
 
 param(
@@ -70,60 +71,24 @@ param(
     [switch]$UseDefaultCredentials
 )
 
-# On Windows PowerShell 5.1, "cd"/Set-Location only moves PowerShell's OWN
-# idea of where you are - it does NOT tell .NET's file-writing functions
-# (which this script uses directly, for reasons explained where they're
-# used), which silently keep using wherever this PowerShell window first
-# opened. Real, confirmed failure mode: folders visibly get created in
-# the right place (PowerShell cmdlets like New-Item follow you), but
-# every file write into them then fails with "Could not find a part of
-# the path", because .NET is still looking somewhere else entirely. This
-# line keeps the two in sync, right from the start, regardless of how
-# this window was opened or what you "cd"'d through to get here.
-[System.Environment]::CurrentDirectory = (Get-Location).Path
-
-# Tells .NET to offer your current Windows login to the proxy if it ever
-# asks for one. Some corporate networks require an authenticated proxy to
-# reach the internet at all - without this, that fails with a confusing
-# "407 (Proxy Authentication Required)" error, since PowerShell doesn't
-# send proxy credentials automatically the way a browser does. Harmless
-# if there's no proxy in the way, or it doesn't need credentials - this
-# only does anything on a network that specifically needs it. Only lasts
-# for this one run, which is why it's set automatically here rather than
-# needing to be retyped by hand every time you open a new window.
-$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-[System.Net.WebRequest]::DefaultWebProxy = $proxy
-
-function Read-HostWithHelp {
-    # Like Read-Host, but typing a bare "?" prints an explanation of what's
-    # being asked for instead of being treated as the actual answer, then
-    # asks again - so someone new to this doesn't have to already know what
-    # to type before they can find out.
-    param([string]$Prompt, [string[]]$HelpText)
-    while ($true) {
-        $answer = Read-Host $Prompt
-        if ($answer -ne "?") {
-            return $answer
-        }
-        foreach ($line in $HelpText) {
-            Write-Host $line
-        }
-    }
+# Everything the scripts here have in common - the questions, talking to
+# Confluence, reading an export folder - lives in confluence_common.ps1,
+# so a fix there fixes every script at once. It has to be in the same
+# folder as this one.
+$commonScript = Join-Path $PSScriptRoot "confluence_common.ps1"
+if (-not (Test-Path -LiteralPath $commonScript)) {
+    Write-Host "Can't find confluence_common.ps1 - it needs to be in the same folder"
+    Write-Host "as this script. Download the whole repository rather than just this"
+    Write-Host "one file."
+    exit 1
 }
+. $commonScript
 
 # Asked every run rather than hardcoded, so there's nothing identifying
 # your Confluence instance sitting in this file to accidentally commit or
 # share. Set CONFLUENCE_BASE_URL for unattended runs, same idea as the
 # credentials further down.
-$baseUrlHelp = @(
-    "The address of your Confluence site, with no slash on the end. Copy it",
-    "from your browser's address bar while viewing any Confluence page,",
-    "keeping only the part before /display/ or /spaces/, e.g.",
-    "https://confluence.yourcompany.com - if there's something in between",
-    "(like /wiki or /confluence), keep that too."
-)
-$BaseUrl = if ($env:CONFLUENCE_BASE_URL) { $env:CONFLUENCE_BASE_URL } else { (Read-HostWithHelp "Confluence base URL" $baseUrlHelp).Trim() }
+$BaseUrl = Read-BaseUrl
 
 # Same idea - only actually used if you leave the "page ID" prompt blank
 # further down (ignored if you're pulling just one specific page), but
@@ -164,9 +129,6 @@ if (-not $OutputDir) { $OutputDir = $suggestedOutputDir }
 # at a time and keeps asking for more until it's got everything (see
 # Get-AllPagesInSpace below).
 $PageSize = 25
-# A short pause between requests, in seconds, so this script doesn't
-# hammer the Confluence server with requests as fast as possible.
-$RequestDelaySeconds = 0.3
 # ---------------------
 
 # Username and password are asked for at runtime rather than hardcoded,
@@ -175,50 +137,7 @@ $RequestDelaySeconds = 0.3
 # CONFLUENCE_PASSWORD as environment variables instead and the prompts
 # below are skipped.
 
-if ($UseDefaultCredentials) {
-    Write-Host "Using your current Windows login instead of a separate username/password."
-}
-else {
-    # Check if the username was already supplied as an environment variable
-    # (handy for unattended/scheduled runs); if not, ask for it right now.
-    $usernameHelp = @(
-        "This is the same username you use to log into Confluence in your",
-        "web browser - usually your email address or your company username.",
-        "If you're not sure, open Confluence in a browser first and check",
-        "what you log in with there."
-    )
-    $Username = if ($env:CONFLUENCE_USERNAME) { $env:CONFLUENCE_USERNAME } else { Read-HostWithHelp "Confluence username" $usernameHelp }
-
-    if ($env:CONFLUENCE_PASSWORD) {
-        # Environment variable already had it - just use that, no prompt.
-        $Password = $env:CONFLUENCE_PASSWORD
-    }
-    else {
-        while ($true) {
-            # Convert the secure string back to plain text only for the moment it's
-            # needed to build the auth header. It's held in memory only, never written
-            # to disk or displayed on screen.
-            # Ask for the password with the on-screen characters hidden (shows
-            # ***** instead of what's actually typed).
-            $SecurePassword = Read-Host "Confluence password" -AsSecureString
-            # The three lines below unscramble that hidden password back into
-            # normal readable text for just long enough to use it, then
-            # immediately wipe the unscrambled copy from memory again.
-            $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
-            $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
-
-            # Password input is masked, so typing "?" isn't visibly different
-            # from typing anything else - only found out here, after decoding.
-            if ($Password -ne "?") {
-                break
-            }
-            Write-Host "This is the same password you use to log into Confluence in your"
-            Write-Host "web browser. It's masked as you type (you won't see the characters"
-            Write-Host "appear) - that's normal, just type it and press Enter."
-        }
-    }
-}
+$Connection = New-ConfluenceConnection -BaseUrl $BaseUrl -UseDefaultCredentials:$UseDefaultCredentials
 
 # Asked every run so it's never silently assumed which mode you're about to
 # get. Leave blank for the whole space, or paste a page ID (from the page
@@ -236,129 +155,6 @@ $pageIdHelp = @(
     ".../pages/123456789/Page+Title means the Page ID is 123456789."
 )
 $PageId = if ($env:CONFLUENCE_PAGE_ID) { $env:CONFLUENCE_PAGE_ID } else { (Read-HostWithHelp "Page ID to extract (leave blank for the whole space)" $pageIdHelp).Trim() }
-
-if ($UseDefaultCredentials) {
-    # No Authorization header needed here - Invoke-ConfluenceApi passes
-    # -UseDefaultCredentials to Invoke-WebRequest instead, which negotiates
-    # using the Windows login directly, the same thing a browser does
-    # automatically.
-    $headers = @{
-        Accept = "application/json"
-    }
-}
-else {
-    # Build the login credentials Confluence expects: username and password
-    # joined together, then converted into the Base64 text format the "Basic
-    # Auth" standard requires (this is encoding, not encryption - always use
-    # HTTPS URLs so this travels over an encrypted connection).
-    $pair = "$($Username):$($Password)"
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($pair)
-    $encodedCredentials = [System.Convert]::ToBase64String($bytes)
-
-    # Every request to Confluence carries these two headers: who's asking
-    # (Authorization) and what data format we want back (Accept: JSON).
-    $headers = @{
-        Authorization = "Basic $encodedCredentials"
-        Accept        = "application/json"
-    }
-}
-
-# Settings for Invoke-WithRetry below: how many times to retry a failed
-# request, and how long to wait before the first retry (each subsequent
-# retry waits twice as long as the one before).
-$RetryMaxAttempts = 3
-$RetryBaseDelaySeconds = 1.0
-
-function Invoke-WithRetry {
-    # Retries an action on connection errors or 5xx responses (transient
-    # issues), but not on 4xx errors (bad credentials/permissions won't fix
-    # themselves by retrying). Without this, a single flaky moment mid-run
-    # (e.g. fetching page 300 of 500) aborts the whole script.
-    param([scriptblock]$Action)
-
-    # Try the given action up to $RetryMaxAttempts times.
-    for ($attempt = 1; $attempt -le $RetryMaxAttempts; $attempt++) {
-        try {
-            # Run whatever action was passed in (e.g. "fetch this page").
-            # If it works, we're done - hand back its result immediately.
-            return & $Action
-        }
-        catch {
-            # It failed. Figure out whether this looks like a "won't get
-            # better if we try again" problem (4xx, e.g. wrong password)
-            # or a "worth trying again" problem (5xx, or no response at
-            # all, e.g. the server had a brief hiccup).
-            $statusCode = $_.Exception.Response.StatusCode.value__
-            $isClientError = $statusCode -and $statusCode -lt 500
-            if ($isClientError -or $attempt -eq $RetryMaxAttempts) {
-                # Either it's a permanent-looking error, or we're out of
-                # attempts - give up and let the error bubble up to
-                # whoever called this.
-                throw
-            }
-            # Worth another try: wait a bit (longer each time) then loop
-            # back around and attempt it again.
-            $wait = $RetryBaseDelaySeconds * [Math]::Pow(2, $attempt - 1)
-            Write-Host "    Request failed ($($_.Exception.Message)), retrying in ${wait}s (attempt $attempt/$RetryMaxAttempts)..."
-            Start-Sleep -Seconds $wait
-        }
-    }
-}
-
-function Invoke-ConfluenceApi {
-    # Invoke-RestMethod guesses the response encoding from the Content-Type
-    # header, and falls back to ISO-8859-1 when no charset is present -
-    # Confluence's REST API often omits one. That silently mangles every
-    # non-ASCII character (smart quotes, en/em dashes, accents) into
-    # "Â"-style garbled text in the extracted HTML. Fetch the raw bytes instead
-    # and decode as UTF-8 ourselves so page content comes through intact.
-    param([string]$Uri)
-
-    # Ask for the raw web response ourselves (rather than letting
-    # Invoke-RestMethod decode it automatically), so we control exactly
-    # how the bytes get turned into text. -UseDefaultCredentials only gets
-    # added when that switch was actually passed at the top of this script
-    # - $headers already has no Authorization entry in that case (see
-    # above), so this negotiates using the current Windows login instead.
-    if ($UseDefaultCredentials) {
-        $response = Invoke-WebRequest -Uri $Uri -Headers $headers -Method Get -UseBasicParsing -UseDefaultCredentials
-    }
-    else {
-        $response = Invoke-WebRequest -Uri $Uri -Headers $headers -Method Get -UseBasicParsing
-    }
-
-    # Depending on the PowerShell version, the raw response bytes show up
-    # in slightly different places - check each possibility in turn.
-    if ($response.RawContentStream) {
-        $bytes = $response.RawContentStream.ToArray()
-    }
-    elseif ($response.Content -is [byte[]]) {
-        $bytes = $response.Content
-    }
-    else {
-        # Content already came back as a (possibly wrongly-decoded) string -
-        # undo the ISO-8859-1 guess to recover the original UTF-8 bytes.
-        $bytes = [System.Text.Encoding]::GetEncoding("ISO-8859-1").GetBytes($response.Content)
-    }
-
-    # Now decode those raw bytes as UTF-8 ourselves (the correct encoding
-    # Confluence actually uses), and parse the resulting text as JSON into
-    # a usable PowerShell object.
-    return [System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
-}
-
-function Get-SanitisedFilename {
-    # Windows/Mac/Linux all disallow certain characters in file names -
-    # this swaps every one of them for an underscore so a page title can
-    # always be safely used as part of a folder/file name.
-    param([string]$Name)
-    $invalidChars = '<>:"/\|?*'
-    $result = $Name
-    foreach ($ch in $invalidChars.ToCharArray()) {
-        $result = $result.Replace([string]$ch, "_")
-    }
-    return $result.Trim()
-}
 
 # A real attachment name can be long ("Q3 2024 Regional Sales Review -
 # Final (reviewed by finance).xlsx"), and this project's own folder depth
@@ -415,43 +211,10 @@ function Get-UniqueFilename {
 
 function Get-AllPagesInSpace {
     # Fetches every page in $SpaceKey, a batch of $PageSize at a time,
-    # until there's nothing left to fetch.
-    $allPages = @()
-    $start = 0
-
-    while ($true) {
-        Write-Host "Fetching page list: start=$start, limit=$PageSize"
-        # Ask Confluence for this batch: which space, only actual pages
-        # (not attachments etc), starting at $start, plus each page's
-        # stored content, version number, parent-page info, and labels.
-        $uri = "$BaseUrl/rest/api/content?spaceKey=$SpaceKey&type=page&start=$start&limit=$PageSize&expand=body.storage,version,ancestors,metadata.labels,history"
-        $data = Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
-
-        # @()-wrapped: when a batch has exactly one result, ConvertFrom-Json
-        # (inside Invoke-ConfluenceApi) hands back a bare object instead of
-        # a one-item array for that JSON array, and the .Count check below
-        # would misfire on a version without PowerShell's newer "count on
-        # a single object" compatibility shim.
-        $results = @($data.results)
-        # Add this batch's pages onto the running total.
-        $allPages += $results
-
-        # An EMPTY batch is the signal there's nothing left. (Not a short
-        # one: some Confluence setups quietly hand back fewer than asked
-        # for, because of a server-side cap on page size, and treating that
-        # as "last batch" would silently miss every page after it.)
-        if ($results.Count -eq 0) {
-            break
-        }
-
-        # Otherwise, move the starting point forward by however many
-        # actually came back (not by $PageSize, for the same reason) and,
-        # after a short polite pause, go around and fetch the next one.
-        $start += $results.Count
-        Start-Sleep -Seconds $RequestDelaySeconds
-    }
-
-    return $allPages
+    # until there's nothing left to fetch - only actual pages (not
+    # attachments etc), plus each page's stored content, version number,
+    # parent-page info, labels and history.
+    return Get-AllResults -Connection $Connection -Path "/rest/api/content" -Query "spaceKey=$SpaceKey&type=page&expand=body.storage,version,ancestors,metadata.labels,history" -Limit $PageSize -DelaySeconds $RequestDelaySeconds -OnBatch { param($start) Write-Host "Fetching page list: start=$start, limit=$PageSize" }
 }
 
 # Links in the rendered page to this page's own attachments point back at
@@ -544,7 +307,7 @@ function Get-SinglePage {
     # information (content, version, parent, labels) as the whole-space path.
     param([string]$PageId)
     $uri = "$BaseUrl/rest/api/content/${PageId}?expand=body.storage,version,ancestors,metadata.labels,history"
-    Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
+    Invoke-WithRetry { Invoke-ConfluenceApi -Connection $Connection -Uri $uri }
 }
 
 # @mentions in the storage HTML reference a user by an opaque userkey (or
@@ -570,7 +333,7 @@ function Resolve-UserDisplayName {
     }
 
     try {
-        $data = Invoke-ConfluenceApi -Uri $uri
+        $data = Invoke-ConfluenceApi -Connection $Connection -Uri $uri
         return $data.displayName
     }
     catch {
@@ -585,56 +348,17 @@ function Get-AttachmentsForPage {
     # anything), a batch at a time the same way Get-AllPagesInSpace does
     # for pages.
     param([string]$PageId)
-
-    $attachments = @()
-    $start = 0
-    $limit = 50
-
-    while ($true) {
-        $uri = "$BaseUrl/rest/api/content/$PageId/child/attachment?start=$start&limit=$limit"
-        $data = Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
-
-        # @()-wrapped - see the matching comment in Get-AllPagesInSpace.
-        $results = @($data.results)
-        $attachments += $results
-
-        # Same as Get-AllPagesInSpace - empty batch means done, and move on
-        # by however many actually came back.
-        if ($results.Count -eq 0) {
-            break
-        }
-        $start += $results.Count
-    }
-
-    return $attachments
-}
-
-function Set-Utf8NoBomContent {
-    # Set-Content -Encoding UTF8 adds a BOM on Windows PowerShell 5.1 (not
-    # on PowerShell 7, which quietly changed this default) - bypassing it
-    # with a direct .NET write keeps output byte-identical to the Python
-    # scripts regardless of which PowerShell version wrote it. Matters
-    # concretely for manifest.json: Python's json module refuses to parse
-    # a leading BOM under plain "utf-8" and crashes outright, so a
-    # PowerShell-extracted, Python-converted mixed run would otherwise fail.
-    param([string]$Path, [string]$Value)
-    [System.IO.File]::WriteAllText($Path, $Value, (New-Object System.Text.UTF8Encoding($false)))
-}
-
-function Save-Attachment {
-    # Downloads one attachment's actual file content to disk.
-    param([string]$DownloadPath, [string]$DestPath)
-
-    # Confluence sometimes gives a full URL, sometimes just the path part
-    # of one - handle both.
-    $url = if ($DownloadPath -like "http*") { $DownloadPath } else { "$BaseUrl$DownloadPath" }
-    Invoke-WithRetry { Invoke-WebRequest -Uri $url -Headers $headers -OutFile $DestPath }
+    return Get-AllResults -Connection $Connection -Path "/rest/api/content/$PageId/child/attachment" -Query ""
 }
 
 # --- Main ---
 # Everything above this line was just defining settings and helper
 # functions - nothing has actually happened yet. This is where the script
 # really starts doing the work.
+
+# Before anything else, so a login that didn't work shows up now rather
+# than as pages quietly missing at the end.
+Test-ConfluenceSignIn -Connection $Connection
 
 # Create the output folders if they don't already exist (does nothing if
 # they're already there, so running this script again is always safe).
@@ -648,10 +372,8 @@ New-Item -ItemType Directory -Force -Path $pagesDir | Out-Null
 # even if this run stops partway. Never any login details. A one-page
 # re-run into a folder that already has one leaves it alone, so it doesn't
 # swap the whole space's details for one page's.
-$sourcePath = Join-Path $OutputDir "export_source.json"
-if (-not ($PageId -and (Test-Path -LiteralPath $sourcePath))) {
-    $source = [PSCustomObject]@{ baseUrl = $BaseUrl.TrimEnd('/'); spaceKey = $SpaceKey; pageId = $PageId }
-    Set-Utf8NoBomContent -Path $sourcePath -Value (ConvertTo-Json -InputObject $source)
+if (-not ($PageId -and (Test-Path -LiteralPath (Join-Path $OutputDir "export_source.json")))) {
+    Save-ExportSource -Dir $OutputDir -BaseUrl $BaseUrl -SpaceKey $SpaceKey -PageId $PageId
 }
 
 if ($PageId) {
@@ -793,7 +515,7 @@ foreach ($page in $pages) {
                     $safeAttName = Get-UniqueFilename (Get-TruncatedFilename (Get-SanitisedFilename $attTitle)) $usedAttachmentNames
                     $destPath = Join-Path $imagesFolder $safeAttName
 
-                    Save-Attachment -DownloadPath $downloadLink -DestPath $destPath
+                    Save-ConfluenceFile -Connection $Connection -Url $downloadLink -OutFile $destPath
                     # Keep both names: the page's HTML references images by
                     # their original Confluence filename, which can differ
                     # from what actually got saved to disk (sanitised
@@ -823,7 +545,7 @@ foreach ($page in $pages) {
         $pageInfo = Get-PageInfo $page
         $renderedFile = $null
         try {
-            $rendered = Invoke-WithRetry { Invoke-ConfluenceApi -Uri "$BaseUrl/rest/api/content/${pageId}?expand=body.export_view" }
+            $rendered = Invoke-WithRetry { Invoke-ConfluenceApi -Connection $Connection -Uri "$BaseUrl/rest/api/content/${pageId}?expand=body.export_view" }
             $renderedHtml = Convert-ToLocalAttachmentLinks -RenderedHtml ([string]$rendered.body.export_view.value) -PageId $pageId -AttachmentRecords $attachmentRecords
             Set-Utf8NoBomContent -Path (Join-Path $pageFolder "rendered.html") -Value (Get-RenderedPage -Title $title -RenderedHtml $renderedHtml -PageInfo $pageInfo)
             $renderedFile = "rendered.html"
@@ -919,7 +641,7 @@ if ($merging) {
     $newEntries = @{}
     foreach ($entry in $manifest) { $newEntries[[string]$entry.id] = $entry }
     # @()-wrapped so a one-page existing manifest is still a list.
-    $existingManifest = @((Get-Content -Raw -LiteralPath $manifestPath -Encoding UTF8 | ConvertFrom-Json))
+    $existingManifest = @((Read-JsonFile $manifestPath))
     $merged = @()
     # Keeps each page in its original place, swapping in the new entry.
     foreach ($entry in $existingManifest) {
@@ -938,11 +660,11 @@ if ($merging) {
     $manifest = $merged
 
     if (Test-Path -LiteralPath $failuresPath) {
-        $keptFailures = @((Get-Content -Raw -LiteralPath $failuresPath -Encoding UTF8 | ConvertFrom-Json) | Where-Object { $_ -and -not $redoneIds.Contains([string]$_.id) })
+        $keptFailures = @((Read-JsonFile $failuresPath) | Where-Object { $_ -and -not $redoneIds.Contains([string]$_.id) })
         $failures = $keptFailures + $failures
     }
     if (Test-Path -LiteralPath $userDisplayNamesPath) {
-        $existingNames = Get-Content -Raw -LiteralPath $userDisplayNamesPath -Encoding UTF8 | ConvertFrom-Json
+        $existingNames = Read-JsonFile $userDisplayNamesPath
         foreach ($prop in $existingNames.PSObject.Properties) {
             if (-not $userDisplayNames.ContainsKey($prop.Name)) { $userDisplayNames[$prop.Name] = $prop.Value }
         }

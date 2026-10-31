@@ -29,13 +29,25 @@ to whoever opens it.
 
 Set CONFLUENCE_EXPORT_DIR to skip the folder question.
 
-Supported by Daniel - raise issues with him.
+Something broken or unclear? Raise an issue at
+https://github.com/DCodeAus/AtlassianConfluenceScraping/issues
 """
 
 import os
 import shutil
 import subprocess
 import sys
+
+# Everything the scripts here have in common - the questions, reading an
+# export folder - lives in confluence_common.py, so a fix there fixes
+# every script at once. It has to be in the same folder as this one.
+try:
+    from confluence_common import ask_export_dir, ask_yes_no, input_with_help
+except ImportError:
+    print("Can't find confluence_common.py (or it's out of date) - it needs to be")
+    print("in the same folder as this script. Download the whole repository")
+    print("rather than just this one file.")
+    raise SystemExit(1)
 
 
 # Above this, GitHub warns on push; at 100 MB it refuses the push outright
@@ -58,18 +70,6 @@ garbled_text_repair_log.json
 Thumbs.db
 desktop.ini
 """
-
-
-def input_with_help(prompt, help_lines):
-    """Like input(), but typing a bare "?" prints an explanation of what's
-    being asked for instead of being treated as the actual answer, then
-    asks again."""
-    while True:
-        answer = input(prompt)
-        if answer != "?":
-            return answer
-        for line in help_lines:
-            print(line)
 
 
 def git(folder, *args, check=True):
@@ -103,23 +103,17 @@ def main():
         print("then open a NEW terminal window and run this again.")
         sys.exit(1)
 
-    args = sys.argv[1:]
-    if args:
-        export_dir = args[0]
-    else:
-        export_dir = os.environ.get("CONFLUENCE_EXPORT_DIR") or input_with_help(
-            "Export folder to put into git (blank for 'confluence_export'): ",
-            [
-                "Which folder to turn into a git repo - the folder name you",
-                "gave the extractor (or the Markdown converter) for that",
-                "space, or its full path if it's somewhere else (e.g. on a",
-                "shared drive).",
-                "Leave blank for: confluence_export",
-            ],
-        ).strip()
-        # Windows "Copy as path" and dragging a folder into the terminal
-        # both wrap the path in quotes - strip them so either works.
-        export_dir = export_dir.strip('"').strip("'") or "confluence_export"
+    export_dir = ask_export_dir(
+        "Export folder to put into git (blank for 'confluence_export'): ",
+        [
+            "Which folder to turn into a git repo - the folder name you",
+            "gave the extractor (or the Markdown converter) for that",
+            "space, or its full path if it's somewhere else (e.g. on a",
+            "shared drive).",
+            "Leave blank for: confluence_export",
+        ],
+        args=sys.argv[1:],
+    )
 
     if not os.path.isdir(export_dir):
         print(f"Can't find '{export_dir}' from here - run this from the folder")
@@ -130,7 +124,7 @@ def main():
     if not os.path.isfile(os.path.join(export_dir, "manifest.json")) and not os.path.isfile(os.path.join(export_dir, "README.md")):
         print(f"'{export_dir}' doesn't look like an export - no manifest.json or")
         print("README.md in it.")
-        if input("Carry on anyway? (y/N): ").strip().lower() != "y":
+        if not ask_yes_no("Carry on anyway? (y/N): "):
             sys.exit(1)
 
     # The export usually sits inside this scripts folder, which is itself
@@ -146,7 +140,7 @@ def main():
                 print(f"'{export_dir}' is inside another git repo ({outer.stdout.strip()})")
                 print("that ISN'T ignoring it - its contents could end up committed there")
                 print("too. Safest is to move the export folder somewhere outside it first.")
-                if input("Carry on anyway? (y/N): ").strip().lower() != "y":
+                if not ask_yes_no("Carry on anyway? (y/N): "):
                     sys.exit(1)
 
     if already_a_repo:
@@ -204,7 +198,7 @@ def main():
             print(f"  {format_size(size):>10}  {path}")
         print("Options: add them to .gitignore and share them another way, or set up")
         print("Git LFS (https://git-lfs.com) for them before committing.")
-        if input("Stage everything anyway? (y/N): ").strip().lower() != "y":
+        if not ask_yes_no("Stage everything anyway? (y/N): "):
             print("Stopped before staging. The repo's set up - fix the above, then run")
             print("this again (it'll pick up where it left off).")
             sys.exit(0)
@@ -215,7 +209,7 @@ def main():
     print(f"{len(staged)} file(s) staged, {format_size(total_bytes)} in total.")
 
     if staged:
-        if input("\nMake the commit now? (y/N): ").strip().lower() == "y":
+        if ask_yes_no("\nMake the commit now? (y/N): "):
             has_commits = git(export_dir, "rev-parse", "--verify", "HEAD", check=False).returncode == 0
             message = "Update Confluence export" if has_commits else f"Add Confluence export ({os.path.basename(export_dir)})"
             git(export_dir, "commit", "-q", "-m", message)

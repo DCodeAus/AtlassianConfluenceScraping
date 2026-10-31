@@ -47,92 +47,33 @@ If you've run repair_garbled_text's -Force/YOLO strip on this export,
 those pages will (correctly) show as not matching - the strip deliberately
 removed characters the live page still has.
 
-Supported by Daniel - raise issues with him.
+Something broken or unclear? Raise an issue at
+https://github.com/DCodeAus/AtlassianConfluenceScraping/issues
 """
 
-import base64
-import getpass
 import hashlib
 import json
 import os
-import re
-import ssl
 import sys
 import time
 import urllib.error
-import urllib.parse
-import urllib.request
 
+# Everything the scripts here have in common - the questions, talking to
+# Confluence, reading an export folder - lives in confluence_common.py, so
+# a fix there fixes every script at once. It has to be in the same folder
+# as this one.
+try:
+    from confluence_common import (
+        REQUEST_DELAY_SECONDS, ask_export_dir, connect, load_export_manifest,
+        normalise_relative_path, print_issue_summary, read_export_source,
+    )
+except ImportError:
+    print("Can't find confluence_common.py (or it's out of date) - it needs to be")
+    print("in the same folder as this script. Download the whole repository")
+    print("rather than just this one file.")
+    raise SystemExit(1)
 
-INTERNAL_CA_PATH = None   # e.g. r"C:\certs\company-root-ca.pem", same as the extractor
-VERIFY_SSL = True
-
-REQUEST_DELAY_SECONDS = 0.3   # same polite pace as the extractor
-RETRY_MAX_ATTEMPTS = 3
-RETRY_BASE_DELAY_SECONDS = 1.0
-
-
-def input_with_help(prompt, help_lines):
-    """Like input(), but typing a bare "?" prints an explanation of what's
-    being asked for instead of being treated as the actual answer, then
-    asks again."""
-    while True:
-        answer = input(prompt)
-        if answer != "?":
-            return answer
-        for line in help_lines:
-            print(line)
-
-
-def getpass_with_help(prompt, help_lines):
-    while True:
-        answer = getpass.getpass(prompt)
-        if answer != "?":
-            return answer
-        for line in help_lines:
-            print(line)
-
-
-# confluence_extractor saves where an export came from into the export
-# folder (export_source.json), so this doesn't have to ask for the site
-# address and space key again. Exports made before that file existed still
-# have the same details on the "- Source:" line of their README.md, so
-# fall back to reading that.
-def read_export_source(export_dir):
-    source_path = os.path.join(export_dir, "export_source.json")
-    if os.path.isfile(source_path):
-        try:
-            with open(source_path, "r", encoding="utf-8-sig") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    readme_path = os.path.join(export_dir, "README.md")
-    if os.path.isfile(readme_path):
-        with open(readme_path, "r", encoding="utf-8-sig") as f:
-            for line in f:
-                match = re.match(r"- Source: (\S+) \((?:space '([^']*)'|page id .*)\)", line.strip())
-                if match:
-                    return {"baseUrl": match.group(1), "spaceKey": match.group(2) or ""}
-    return {}
-
-
-def env_saved_or_ask(env_var, saved_value, label, ask):
-    """An environment variable wins (for unattended runs), then whatever
-    was saved with the export - shown, so you can see what's being used -
-    and only if neither has it, the usual question."""
-    if os.environ.get(env_var):
-        return os.environ[env_var]
-    if saved_value:
-        print(f"{label}: {saved_value} (saved with this export)")
-        return saved_value
-    return ask()
-
-
-# Same as confluence_verify_extraction - a manifest "folder" from the
-# PowerShell extractor uses backslashes, so swap in this machine's own
-# separator before joining it onto a path.
-def normalise_relative_path(relative_path):
-    return relative_path.replace("\\", os.sep).replace("/", os.sep)
+REPORT_NAME = "live_content_report.json"
 
 
 # Python's text-mode write on Windows turns every \n into \r\n, so a
@@ -161,123 +102,33 @@ def describe_first_difference(saved, live, context=40):
     }
 
 
-def print_issue_summary(label, items, show_max=15):
-    if not items:
-        print(f"  {label} : none")
-        return
-    print(f"  {label} : {len(items)}")
-    for item in items[:show_max]:
-        detail = f" - {item['reason']}" if item.get("reason") else ""
-        print(f"    - [{item['id']}] {item['title']}{detail}")
-    if len(items) > show_max:
-        print(f"    ... and {len(items) - show_max} more (full list in live_content_report.json)")
-
-
 def main():
     args = sys.argv[1:]
 
     # Asked every run unless given as an argument, same as
     # confluence_verify_extraction - each space's export can live under its
     # own name, or somewhere else entirely like a shared drive.
-    if args:
-        export_dir = args[0]
-    else:
-        export_dir = os.environ.get("CONFLUENCE_EXPORT_DIR") or input_with_help(
-            "Export folder to check (blank for 'confluence_export'): ",
-            [
-                "Which extraction to check against live Confluence - the",
-                "folder name you gave (or accepted the default for) when",
-                "running confluence_extractor.py/.ps1 for that space, or its",
-                "full path if it's somewhere else (e.g. on a shared drive).",
-                "Leave blank for: confluence_export",
-            ],
-        ).strip()
-        # Windows "Copy as path" and dragging a folder into the terminal
-        # both wrap the path in quotes - strip them so either works.
-        export_dir = export_dir.strip('"').strip("'") or "confluence_export"
-
-    # Checked before asking for a login, so a mistyped folder doesn't cost
-    # you typing your password first.
-    if not os.path.isdir(export_dir):
-        print(f"Can't find '{export_dir}' from here - run this from the folder")
-        print("that contains it, or give its full path instead.")
-        sys.exit(1)
-
-    manifest_path = os.path.join(export_dir, "manifest.json")
-    if not os.path.isfile(manifest_path):
-        print(f"No manifest.json in '{export_dir}' - that's written by")
-        print("confluence_extractor once it finishes, so either the")
-        print("extraction hasn't been run yet, or this is pointed at the")
-        print("wrong folder.")
-        sys.exit(1)
-
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        manifest = json.load(f)
+    export_dir = ask_export_dir(
+        "Export folder to check (blank for 'confluence_export'): ",
+        [
+            "Which extraction to check against live Confluence - the",
+            "folder name you gave (or accepted the default for) when",
+            "running confluence_extractor.py/.ps1 for that space, or its",
+            "full path if it's somewhere else (e.g. on a shared drive).",
+            "Leave blank for: confluence_export",
+        ],
+        args=args,
+    )
+    manifest, manifest_path = load_export_manifest(export_dir)
     print(f"{len(manifest)} page(s) recorded in {manifest_path}.\n")
 
+    # The site address comes from the export folder itself (saved there by
+    # the extractor), so only your login gets asked for.
     saved = read_export_source(export_dir)
-    base_url = env_saved_or_ask("CONFLUENCE_BASE_URL", saved.get("baseUrl"), "Confluence base URL", lambda: input_with_help(
-        "Confluence base URL: ",
-        [
-            "The address of the Confluence site this export came from -",
-            "everything in a page's URL before /display/ or /spaces/, with",
-            "no slash on the end.",
-        ],
-    ).strip()).rstrip("/")
-    username = os.environ.get("CONFLUENCE_USERNAME") or input_with_help(
-        "Confluence username: ",
-        ["The same username you log into Confluence with in your browser."],
-    )
-    password = os.environ.get("CONFLUENCE_PASSWORD") or getpass_with_help(
-        "Confluence password: ",
-        ["Masked as you type - that's normal, just type it and press Enter."],
-    )
-
-    auth_header = "Basic " + base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
-    if INTERNAL_CA_PATH:
-        ssl_context = ssl.create_default_context(cafile=INTERNAL_CA_PATH)
-    elif not VERIFY_SSL:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-    else:
-        ssl_context = ssl.create_default_context()
-
-    def api_get(path, params):
-        url = f"{base_url}{path}?{urllib.parse.urlencode(params)}"
-        request = urllib.request.Request(url)
-        request.add_header("Authorization", auth_header)
-        request.add_header("Accept", "application/json")
-        last_error = None
-        for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
-            try:
-                with urllib.request.urlopen(request, context=ssl_context) as response:
-                    return json.loads(response.read().decode("utf-8"))
-            except urllib.error.HTTPError as e:
-                last_error = e
-                if e.code < 500 or attempt == RETRY_MAX_ATTEMPTS:
-                    raise
-            except urllib.error.URLError as e:
-                last_error = e
-                if attempt == RETRY_MAX_ATTEMPTS:
-                    raise
-            wait = RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
-            print(f"    Request failed ({last_error}), retrying in {wait:.1f}s (attempt {attempt}/{RETRY_MAX_ATTEMPTS})...")
-            time.sleep(wait)
-
-    def get_all(path, params):
-        """Every result from a listing, a batch at a time. Stops on an EMPTY
-        batch and moves on by however many actually came back - some
-        servers cap the batch size below what's asked for, and stopping
-        on a short batch would silently miss the rest."""
-        results = []
-        start = 0
-        while True:
-            batch = api_get(path, {**params, "start": start, "limit": 50}).get("results", [])
-            if not batch:
-                return results
-            results.extend(batch)
-            start += len(batch)
+    confluence = connect(saved.get("baseUrl"))
+    confluence.check_signed_in()
+    api_get = confluence.get_json
+    get_all = confluence.get_all
 
     def file_hash(path):
         digest = hashlib.sha256()
@@ -291,13 +142,10 @@ def main():
         hands back its hash, size and first few bytes - so a saved file can
         be compared with what Confluence actually sends right now, rather
         than with the size it has on record (which isn't always right)."""
-        url = download_path if download_path.startswith("http") else f"{base_url}{download_path}"
-        request = urllib.request.Request(url)
-        request.add_header("Authorization", auth_header)
         digest = hashlib.sha256()
         size = 0
         start = b""
-        with urllib.request.urlopen(request, context=ssl_context) as response:
+        with confluence.open(download_path) as response:
             for chunk in iter(lambda: response.read(1024 * 1024), b""):
                 if not start:
                     start = chunk[:512]
@@ -476,21 +324,21 @@ def main():
 
     print("\n--- Must fix before Confluence is switched off ---")
     print(f"  Pages matching live exactly : {len(matching)} of {len(manifest)}")
-    print_issue_summary("Live pages missing from the export entirely", missing_pages)
-    print_issue_summary("Saved content doesn't match live (same version - the save went wrong, re-extract these)", content_differs)
-    print_issue_summary("Edited in Confluence since extraction (export out of date for these)", edited_since)
-    print_issue_summary("Title, parent page or labels differ from live (renamed/moved since - re-extract)", details_differ)
-    print_issue_summary("Live attachments that weren't saved", missing_attachments)
-    print_issue_summary("Saved attachments missing or different from live (re-extract these pages)", attachment_files_wrong)
-    print_issue_summary("Couldn't check", could_not_check)
+    print_issue_summary("Live pages missing from the export entirely", missing_pages, REPORT_NAME)
+    print_issue_summary("Saved content doesn't match live (same version - the save went wrong, re-extract these)", content_differs, REPORT_NAME)
+    print_issue_summary("Edited in Confluence since extraction (export out of date for these)", edited_since, REPORT_NAME)
+    print_issue_summary("Title, parent page or labels differ from live (renamed/moved since - re-extract)", details_differ, REPORT_NAME)
+    print_issue_summary("Live attachments that weren't saved", missing_attachments, REPORT_NAME)
+    print_issue_summary("Saved attachments missing or different from live (re-extract these pages)", attachment_files_wrong, REPORT_NAME)
+    print_issue_summary("Couldn't check", could_not_check, REPORT_NAME)
     if space_check_note:
         print(f"  NOTE: {space_check_note}")
 
     print("\n--- For your information ---")
-    print_issue_summary("No longer live (likely deleted/moved since extraction - not necessarily a problem)", no_longer_live)
-    print_issue_summary("Attachments since removed from Confluence (still in the export)", attachments_removed_live)
-    print_issue_summary("Attachments where Confluence's recorded size is wrong, but a fresh download matches the saved file exactly (fine)", size_record_wrong)
-    print_issue_summary("Attachments Confluence didn't report a size for (size not checked)", size_not_reported)
+    print_issue_summary("No longer live (likely deleted/moved since extraction - not necessarily a problem)", no_longer_live, REPORT_NAME)
+    print_issue_summary("Attachments since removed from Confluence (still in the export)", attachments_removed_live, REPORT_NAME)
+    print_issue_summary("Attachments where Confluence's recorded size is wrong, but a fresh download matches the saved file exactly (fine)", size_record_wrong, REPORT_NAME)
+    print_issue_summary("Attachments Confluence didn't report a size for (size not checked)", size_not_reported, REPORT_NAME)
     print("  Pages restricted from your account can't be seen by any check - Confluence")
     print("  doesn't list them to you at all.")
 
@@ -500,7 +348,7 @@ def main():
 
     report = {
         "manifestPath": manifest_path,
-        "baseUrl": base_url,
+        "baseUrl": confluence.base_url,
         "checkedOn": time.strftime("%Y-%m-%d %H:%M"),
         "totalPagesInManifest": len(manifest),
         "matchingCount": len(matching),
@@ -517,7 +365,7 @@ def main():
         "sizeNotReported": size_not_reported,
         "sizeRecordWrong": size_record_wrong,
     }
-    report_path = os.path.join(export_dir, "live_content_report.json")
+    report_path = os.path.join(export_dir, REPORT_NAME)
     try:
         with open(report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False)

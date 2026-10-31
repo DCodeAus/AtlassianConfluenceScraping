@@ -28,61 +28,32 @@ both in advance for unattended runs.
 """
 
 import csv
-import json
 import os
 import re
 import sys
 import xml.etree.ElementTree as ET
+
+# Everything the scripts here have in common - the questions, reading an
+# export folder, making sense of Confluence's page HTML - lives in
+# confluence_common.py, so a fix there fixes every script at once. It has
+# to be in the same folder as this one.
+try:
+    from confluence_common import (
+        NAMESPACE_DECLARATIONS, ask_export_dir, escape_non_xml_entities,
+        input_with_help, load_export_manifest, local_name,
+        normalise_relative_path, sanitise_filename, suggest_output_dir,
+    )
+except ImportError:
+    print("Can't find confluence_common.py (or it's out of date) - it needs to be")
+    print("in the same folder as this script. Download the whole repository")
+    print("rather than just this one file.")
+    raise SystemExit(1)
 
 # EXPORT_DIR / TABLE_EXPORT_DIR are set inside main() instead of here,
 # since which export to use is asked at runtime rather than hardcoded -
 # see the comment there.
 EXPORT_DIR = "confluence_export"
 TABLE_EXPORT_DIR = "confluence_table_export"
-
-NAMESPACE_DECLARATIONS = (
-    'xmlns:ac="http://www.atlassian.com/schema/confluence/4/ac/" '
-    'xmlns:ri="http://www.atlassian.com/schema/confluence/4/ri/"'
-)
-
-# Same list as the other converters - see confluence_html_to_markdown.py
-# for why these specific ones.
-KNOWN_HTML_ENTITIES = {
-    "nbsp": " ",
-    "mdash": "—",
-    "ndash": "–",
-    "hellip": "…",
-    "lsquo": "‘",
-    "rsquo": "’",
-    "ldquo": "“",
-    "rdquo": "”",
-    "trade": "™",
-    "copy": "©",
-    "reg": "®",
-}
-
-
-def escape_non_xml_entities(raw_html):
-    for name, char in KNOWN_HTML_ENTITIES.items():
-        raw_html = raw_html.replace(f"&{name};", char)
-    return raw_html
-
-
-def local_name(tag):
-    return tag.split("}", 1)[1] if "}" in tag else tag
-
-
-def normalise_relative_path(path_str):
-    parts = re.split(r"[\\/]+", path_str)
-    return os.path.join(*parts) if parts else path_str
-
-
-def sanitise_filename(name):
-    invalid_chars = '<>:"/\\|?*'
-    for ch in invalid_chars:
-        name = name.replace(ch, "_")
-    return name.strip()
-
 
 def convert_node_to_text(elem):
     """Plain text only - a CSV cell has no room for links/formatting, just
@@ -144,19 +115,6 @@ def find_page(manifest, query):
     return None
 
 
-def input_with_help(prompt, help_lines):
-    """Like input(), but typing a bare "?" prints an explanation of what's
-    being asked for instead of being treated as the actual answer, then
-    asks again - so someone new to this doesn't have to already know what
-    to type before they can find out."""
-    while True:
-        answer = input(prompt)
-        if answer.strip() != "?":
-            return answer
-        for line in help_lines:
-            print(line)
-
-
 def main():
     # A title/id on the command line skips the prompt (handy for
     # scripting); otherwise just ask, and keep asking until something's
@@ -183,7 +141,7 @@ def main():
     # second space's export just means answering this differently - give
     # it the exact same name you gave the extractor for that space. Set
     # CONFLUENCE_EXPORT_DIR for unattended runs.
-    EXPORT_DIR = os.environ.get("CONFLUENCE_EXPORT_DIR") or input_with_help(
+    EXPORT_DIR = ask_export_dir(
         "Export folder (blank for 'confluence_export'): ",
         [
             "Which extraction this is for - the exact folder name you gave",
@@ -191,17 +149,12 @@ def main():
             "confluence_extractor.py/.ps1 for this space.",
             "Leave blank for: confluence_export",
         ],
-    ).strip() or "confluence_export"
+    )
 
     # Suggest a matching output folder name, same idea as the other
     # scripts, so a second space's table CSV doesn't land in (and
     # overwrite) the first one's.
-    if EXPORT_DIR == "confluence_export":
-        suggested_table_export_dir = "confluence_table_export"
-    elif EXPORT_DIR.startswith("confluence_export"):
-        suggested_table_export_dir = "confluence_table_export" + EXPORT_DIR[len("confluence_export"):]
-    else:
-        suggested_table_export_dir = f"confluence_table_export_{EXPORT_DIR}"
+    suggested_table_export_dir = suggest_output_dir(EXPORT_DIR, "confluence_table_export")
 
     TABLE_EXPORT_DIR = os.environ.get("CONFLUENCE_TABLE_EXPORT_DIR") or input_with_help(
         f"Output folder (blank for '{suggested_table_export_dir}'): ",
@@ -211,20 +164,7 @@ def main():
         ],
     ).strip() or suggested_table_export_dir
 
-    manifest_path = os.path.join(EXPORT_DIR, "manifest.json")
-    if not os.path.exists(manifest_path):
-        print(f"Can't find manifest.json at {manifest_path}.")
-        print("Run confluence_extractor.py (or .ps1) first.")
-        return
-
-    # utf-8-sig, not utf-8: if manifest.json was written by
-    # confluence_extractor.ps1 on Windows PowerShell 5.1, Set-Content
-    # -Encoding UTF8 adds a BOM there (unlike this Python extractor, and
-    # unlike PowerShell 7's Set-Content) - plain "utf-8" chokes outright
-    # on that BOM with a JSONDecodeError. utf-8-sig handles a manifest
-    # with or without one.
-    with open(manifest_path, "r", encoding="utf-8-sig") as f:
-        manifest = json.load(f)
+    manifest, manifest_path = load_export_manifest(EXPORT_DIR)
 
     page_entry = find_page(manifest, query)
     if page_entry is None:

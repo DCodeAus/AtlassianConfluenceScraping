@@ -49,7 +49,8 @@ If you've run repair_garbled_text's -Force/YOLO strip on this export,
 those pages will (correctly) show as not matching - the strip deliberately
 removed characters the live page still has.
 
-Supported by Daniel - raise issues with him.
+Something broken or unclear? Raise an issue at
+https://github.com/DCodeAus/AtlassianConfluenceScraping/issues
 #>
 
 param(
@@ -61,87 +62,20 @@ param(
     [switch]$UseDefaultCredentials
 )
 
-# Same Windows PowerShell 5.1 fix as every other script here - keeps .NET's
-# idea of the current folder in step with PowerShell's, so the .NET file
-# reads below find content.html where PowerShell says it is.
-[System.Environment]::CurrentDirectory = (Get-Location).Path
-
-# Same proxy fix as the extractor - harmless if there's no proxy in the way.
-$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-[System.Net.WebRequest]::DefaultWebProxy = $proxy
-
-$RequestDelaySeconds = 0.3   # same polite pace as the extractor
-$RetryMaxAttempts = 3
-$RetryBaseDelaySeconds = 1.0
-
-function Read-HostWithHelp {
-    param([string]$Prompt, [string[]]$HelpText)
-    while ($true) {
-        $answer = Read-Host $Prompt
-        if ($answer -ne "?") {
-            return $answer
-        }
-        foreach ($line in $HelpText) {
-            Write-Host $line
-        }
-    }
+# Everything the scripts here have in common - the questions, talking to
+# Confluence, reading an export folder - lives in confluence_common.ps1,
+# so a fix there fixes every script at once. It has to be in the same
+# folder as this one.
+$commonScript = Join-Path $PSScriptRoot "confluence_common.ps1"
+if (-not (Test-Path -LiteralPath $commonScript)) {
+    Write-Host "Can't find confluence_common.ps1 - it needs to be in the same folder"
+    Write-Host "as this script. Download the whole repository rather than just this"
+    Write-Host "one file."
+    exit 1
 }
+. $commonScript
 
-function Set-Utf8NoBomContent {
-    param([string]$Path, [string]$Value)
-    [System.IO.File]::WriteAllText($Path, $Value, (New-Object System.Text.UTF8Encoding($false)))
-}
-
-# Same as confluence_verify_extraction.ps1 - lets this also run from
-# Mac/Linux against a copied export.
-function Get-NormalisedRelativePath {
-    param([string]$RelativePath)
-    return $RelativePath.Replace('\', [System.IO.Path]::DirectorySeparatorChar).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
-}
-
-# confluence_extractor.ps1 saves where an export came from into the export
-# folder (export_source.json), so this doesn't have to ask for the site
-# address and space key again. Exports made before that file existed still
-# have the same details on the "- Source:" line of their README.md, so
-# fall back to reading that.
-function Get-ExportSource {
-    param([string]$Dir)
-    $sourcePath = Join-Path $Dir "export_source.json"
-    if (Test-Path -LiteralPath $sourcePath) {
-        try {
-            $source = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $sourcePath).Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-            return @{ baseUrl = [string]$source.baseUrl; spaceKey = [string]$source.spaceKey }
-        }
-        catch {
-            # Unreadable file - fall through to the README below instead.
-        }
-    }
-    $readmePath = Join-Path $Dir "README.md"
-    if (Test-Path -LiteralPath $readmePath) {
-        foreach ($line in [System.IO.File]::ReadAllLines((Resolve-Path -LiteralPath $readmePath).Path, [System.Text.Encoding]::UTF8)) {
-            if ($line.Trim() -match "^- Source: (\S+) \((?:space '([^']*)'|page id .*)\)") {
-                return @{ baseUrl = $Matches[1]; spaceKey = [string]$Matches[2] }
-            }
-        }
-    }
-    return @{ baseUrl = ""; spaceKey = "" }
-}
-
-function Get-EnvSavedOrAsk {
-    # An environment variable wins (for unattended runs), then whatever was
-    # saved with the export - shown, so you can see what's being used - and
-    # only if neither has it, the usual question.
-    param([string]$EnvValue, [string]$SavedValue, [string]$Label, [string[]]$HelpText)
-    if ($EnvValue) {
-        return $EnvValue
-    }
-    if ($SavedValue) {
-        Write-Host "${Label}: $SavedValue (saved with this export)"
-        return $SavedValue
-    }
-    return (Read-HostWithHelp $Label $HelpText).Trim()
-}
+$ReportName = "live_content_report.json"
 
 # Python's text-mode write on Windows turns every \n into \r\n, so a
 # content.html saved by confluence_extractor.py on Windows never matches
@@ -172,162 +106,28 @@ function Get-FirstDifference {
     }
 }
 
-function Write-IssueSummary {
-    param([string]$Label, [array]$Items, [int]$ShowMax = 15)
-    if ($Items.Count -eq 0) {
-        Write-Host "  $Label : none"
-        return
-    }
-    Write-Host "  $Label : $($Items.Count)"
-    foreach ($item in ($Items | Select-Object -First $ShowMax)) {
-        $detail = if ($item.reason) { " - $($item.reason)" } else { "" }
-        Write-Host "    - [$($item.id)] $($item.title)$detail"
-    }
-    if ($Items.Count -gt $ShowMax) {
-        Write-Host "    ... and $($Items.Count - $ShowMax) more (full list in live_content_report.json)"
-    }
-}
-
 # Asked every run unless -ExportDir is given, same as
 # confluence_verify_extraction.ps1 - each space's export can live under its
 # own name, or somewhere else entirely like a shared drive.
-if (-not $ExportDir) {
-    $exportDirHelp = @(
-        "Which extraction to check against live Confluence - the folder name",
-        "you gave (or accepted the default for) when running",
-        "confluence_extractor.ps1 for that space, or its full path if it's",
-        "somewhere else (e.g. a shared drive).",
-        "Leave blank for: confluence_export"
-    )
-    $ExportDir = if ($env:CONFLUENCE_EXPORT_DIR) { $env:CONFLUENCE_EXPORT_DIR } else { (Read-HostWithHelp "Export folder to check (blank for 'confluence_export')" $exportDirHelp).Trim() }
-    # Explorer's "Copy as path" and dragging a folder into the window both
-    # wrap the path in quotes - strip them so either works.
-    $ExportDir = $ExportDir.Trim('"').Trim("'")
-    if (-not $ExportDir) { $ExportDir = "confluence_export" }
-}
-
-# Checked before asking for a login, so a mistyped folder doesn't cost you
-# typing your password first.
-if (-not (Test-Path -LiteralPath $ExportDir)) {
-    Write-Host "Can't find '$ExportDir' from here - run this from the folder"
-    Write-Host "that contains it, or give its full path instead."
-    exit 1
-}
-
-$manifestPath = Join-Path $ExportDir "manifest.json"
-if (-not (Test-Path -LiteralPath $manifestPath)) {
-    Write-Host "No manifest.json in '$ExportDir' - that's written by"
-    Write-Host "confluence_extractor.ps1 once it finishes, so either the"
-    Write-Host "extraction hasn't been run yet, or this is pointed at the"
-    Write-Host "wrong folder."
-    exit 1
-}
-
-# @()-wrapped so a one-page manifest is still a one-item array.
-$manifest = @(([System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $manifestPath).Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json))
+$exportDirHelp = @(
+    "Which extraction to check against live Confluence - the folder name",
+    "you gave (or accepted the default for) when running",
+    "confluence_extractor.ps1 for that space, or its full path if it's",
+    "somewhere else (e.g. a shared drive).",
+    "Leave blank for: confluence_export"
+)
+$ExportDir = Read-ExportDir -Value $ExportDir -Prompt "Export folder to check (blank for 'confluence_export')" -HelpText $exportDirHelp
+$export = Get-ExportManifest -Dir $ExportDir
+$manifest = $export.Manifest
+$manifestPath = $export.Path
 Write-Host "$($manifest.Count) page(s) recorded in $manifestPath.`n"
 
-$baseUrlHelp = @(
-    "The address of the Confluence site this export came from - everything",
-    "in a page's URL before /display/ or /spaces/, with no slash on the end."
-)
+# The site address comes from the export folder itself (saved there by
+# the extractor), so only your login gets asked for.
 $saved = Get-ExportSource -Dir $ExportDir
-$BaseUrl = (Get-EnvSavedOrAsk $env:CONFLUENCE_BASE_URL $saved.baseUrl "Confluence base URL" $baseUrlHelp).TrimEnd('/')
-
-if ($UseDefaultCredentials) {
-    Write-Host "Using your current Windows login instead of a separate username/password."
-    $headers = @{ Accept = "application/json" }
-}
-else {
-    $Username = if ($env:CONFLUENCE_USERNAME) { $env:CONFLUENCE_USERNAME } else { Read-HostWithHelp "Confluence username" @("The same username you log into Confluence with in your browser.") }
-    if ($env:CONFLUENCE_PASSWORD) {
-        $Password = $env:CONFLUENCE_PASSWORD
-    }
-    else {
-        # Typed with the characters hidden, then unscrambled back to plain
-        # text only for as long as it takes to build the login header below
-        # - held in memory only, never written anywhere.
-        $SecurePassword = Read-Host "Confluence password" -AsSecureString
-        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
-        $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
-    }
-    # "Basic Auth": username:password in Base64 - encoding, not encryption,
-    # so always use an https:// address.
-    $pair = "$($Username):$($Password)"
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($pair)
-    $headers = @{
-        Authorization = "Basic $([System.Convert]::ToBase64String($bytes))"
-        Accept        = "application/json"
-    }
-}
-
-function Invoke-WithRetry {
-    # Same as the extractor: retries connection errors and 5xx, not 4xx.
-    param([scriptblock]$Action)
-    for ($attempt = 1; $attempt -le $RetryMaxAttempts; $attempt++) {
-        try {
-            return & $Action
-        }
-        catch {
-            $statusCode = $_.Exception.Response.StatusCode.value__
-            $isClientError = $statusCode -and $statusCode -lt 500
-            if ($isClientError -or $attempt -eq $RetryMaxAttempts) {
-                throw
-            }
-            $wait = $RetryBaseDelaySeconds * [Math]::Pow(2, $attempt - 1)
-            Write-Host "    Request failed ($($_.Exception.Message)), retrying in ${wait}s (attempt $attempt/$RetryMaxAttempts)..."
-            Start-Sleep -Seconds $wait
-        }
-    }
-}
-
-function Invoke-ConfluenceApi {
-    # Same raw-bytes-then-UTF-8 approach as the extractor, and it matters
-    # even more here: letting Invoke-RestMethod guess the encoding would
-    # garble the LIVE copy, and every page with a smart quote or accent
-    # would then wrongly show up as not matching.
-    param([string]$Uri)
-    if ($UseDefaultCredentials) {
-        $response = Invoke-WebRequest -Uri $Uri -Headers $headers -Method Get -UseBasicParsing -UseDefaultCredentials
-    }
-    else {
-        $response = Invoke-WebRequest -Uri $Uri -Headers $headers -Method Get -UseBasicParsing
-    }
-    if ($response.RawContentStream) {
-        $bytes = $response.RawContentStream.ToArray()
-    }
-    elseif ($response.Content -is [byte[]]) {
-        $bytes = $response.Content
-    }
-    else {
-        $bytes = [System.Text.Encoding]::GetEncoding("ISO-8859-1").GetBytes($response.Content)
-    }
-    return [System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
-}
-
-function Get-AllResults {
-    # Every result from a listing, a batch at a time. Stops on an EMPTY
-    # batch and moves on by however many actually came back - some servers
-    # cap the batch size below what's asked for, and stopping on a short
-    # batch would silently miss the rest. $Query is everything after the
-    # "?" except start/limit.
-    param([string]$Path, [string]$Query)
-    $all = @()
-    $start = 0
-    while ($true) {
-        $uri = "$BaseUrl$Path`?$Query&start=$start&limit=50"
-        $data = Invoke-WithRetry { Invoke-ConfluenceApi -Uri $uri }
-        # @()-wrapped - a batch of exactly one would otherwise come back as
-        # a bare object.
-        $batch = @($data.results | Where-Object { $_ })
-        if ($batch.Count -eq 0) {
-            return $all
-        }
-        $all += $batch
-        $start += $batch.Count
-    }
-}
+$Connection = Connect-Confluence -SavedBaseUrl $saved.baseUrl -UseDefaultCredentials:$UseDefaultCredentials
+$BaseUrl = $Connection.BaseUrl
+Test-ConfluenceSignIn -Connection $Connection
 
 function Get-FreshDownload {
     # Downloads the live file again into a temporary file, and hands back
@@ -336,15 +136,9 @@ function Get-FreshDownload {
     # than with the size it has on record (which isn't always right). The
     # temporary file is always deleted afterwards.
     param([string]$DownloadPath)
-    $url = if ($DownloadPath -like "http*") { $DownloadPath } else { "$BaseUrl$DownloadPath" }
     $tempPath = [System.IO.Path]::GetTempFileName()
     try {
-        if ($UseDefaultCredentials) {
-            Invoke-WithRetry { Invoke-WebRequest -Uri $url -Headers $headers -OutFile $tempPath -UseBasicParsing -UseDefaultCredentials }
-        }
-        else {
-            Invoke-WithRetry { Invoke-WebRequest -Uri $url -Headers $headers -OutFile $tempPath -UseBasicParsing }
-        }
+        Save-ConfluenceFile -Connection $Connection -Url $DownloadPath -OutFile $tempPath
         $stream = [System.IO.File]::OpenRead($tempPath)
         try {
             $buffer = New-Object byte[] 512
@@ -385,7 +179,7 @@ foreach ($page in $manifest) {
     $status = @()
 
     try {
-        $live = Invoke-WithRetry { Invoke-ConfluenceApi -Uri "$BaseUrl/rest/api/content/${pageId}?expand=body.storage,version,ancestors,metadata.labels" }
+        $live = Invoke-WithRetry { Invoke-ConfluenceApi -Connection $Connection -Uri "$BaseUrl/rest/api/content/${pageId}?expand=body.storage,version,ancestors,metadata.labels" }
         $liveBody = Get-NormalisedLineEndings ([string]$live.body.storage.value)
         $liveVersion = $live.version.number
         $savedVersion = $page.version
@@ -466,7 +260,7 @@ foreach ($page in $manifest) {
         }
         $pageFolder = Join-Path $ExportDir (Get-NormalisedRelativePath $page.folder)
         $liveNames = [System.Collections.Generic.HashSet[string]]::new()
-        foreach ($liveAttachment in @(Get-AllResults -Path "/rest/api/content/$pageId/child/attachment" -Query "expand=version")) {
+        foreach ($liveAttachment in @(Get-AllResults -Connection $Connection -Path "/rest/api/content/$pageId/child/attachment" -Query "expand=version")) {
             $name = [string]$liveAttachment.title
             [void]$liveNames.Add($name)
             if (-not $savedByName.ContainsKey($name)) {
@@ -557,7 +351,7 @@ if ($spaceKey) {
     try {
         $manifestIds = [System.Collections.Generic.HashSet[string]]::new()
         foreach ($p in $manifest) { [void]$manifestIds.Add([string]$p.id) }
-        $livePages = @(Get-AllResults -Path "/rest/api/content" -Query "spaceKey=$([System.Uri]::EscapeDataString($spaceKey))&type=page")
+        $livePages = @(Get-AllResults -Connection $Connection -Path "/rest/api/content" -Query "spaceKey=$([System.Uri]::EscapeDataString($spaceKey))&type=page")
         $missingPages = @($livePages | Where-Object { -not $manifestIds.Contains([string]$_.id) } | ForEach-Object { [PSCustomObject]@{ id = $_.id; title = $_.title } })
         Write-Host "  $($livePages.Count) page(s) live, $($manifest.Count) in the export."
     }
@@ -571,22 +365,22 @@ else {
 
 Write-Host "`n--- Must fix before Confluence is switched off ---"
 Write-Host "  Pages matching live exactly : $matchingCount of $($manifest.Count)"
-Write-IssueSummary "Live pages missing from the export entirely" $missingPages
-Write-IssueSummary "Saved content doesn't match live (same version - the save went wrong, re-extract these)" $contentDiffers
-Write-IssueSummary "Edited in Confluence since extraction (export out of date for these)" $editedSince
-Write-IssueSummary "Title, parent page or labels differ from live (renamed/moved since - re-extract)" $detailsDiffer
-Write-IssueSummary "Live attachments that weren't saved" $missingAttachments
-Write-IssueSummary "Saved attachments missing or different from live (re-extract these pages)" $attachmentFilesWrong
-Write-IssueSummary "Couldn't check" $couldNotCheck
+Write-IssueSummary "Live pages missing from the export entirely" $missingPages $ReportName
+Write-IssueSummary "Saved content doesn't match live (same version - the save went wrong, re-extract these)" $contentDiffers $ReportName
+Write-IssueSummary "Edited in Confluence since extraction (export out of date for these)" $editedSince $ReportName
+Write-IssueSummary "Title, parent page or labels differ from live (renamed/moved since - re-extract)" $detailsDiffer $ReportName
+Write-IssueSummary "Live attachments that weren't saved" $missingAttachments $ReportName
+Write-IssueSummary "Saved attachments missing or different from live (re-extract these pages)" $attachmentFilesWrong $ReportName
+Write-IssueSummary "Couldn't check" $couldNotCheck $ReportName
 if ($spaceCheckNote) {
     Write-Host "  NOTE: $spaceCheckNote"
 }
 
 Write-Host "`n--- For your information ---"
-Write-IssueSummary "No longer live (likely deleted/moved since extraction - not necessarily a problem)" $noLongerLive
-Write-IssueSummary "Attachments since removed from Confluence (still in the export)" $attachmentsRemovedLive
-Write-IssueSummary "Attachments where Confluence's recorded size is wrong, but a fresh download matches the saved file exactly (fine)" $sizeRecordWrong
-Write-IssueSummary "Attachments Confluence didn't report a size for (size not checked)" $sizeNotReported
+Write-IssueSummary "No longer live (likely deleted/moved since extraction - not necessarily a problem)" $noLongerLive $ReportName
+Write-IssueSummary "Attachments since removed from Confluence (still in the export)" $attachmentsRemovedLive $ReportName
+Write-IssueSummary "Attachments where Confluence's recorded size is wrong, but a fresh download matches the saved file exactly (fine)" $sizeRecordWrong $ReportName
+Write-IssueSummary "Attachments Confluence didn't report a size for (size not checked)" $sizeNotReported $ReportName
 Write-Host "  Pages restricted from your account can't be seen by any check - Confluence"
 Write-Host "  doesn't list them to you at all."
 
@@ -620,7 +414,7 @@ $report = [PSCustomObject]@{
     sizeRecordWrong        = $sizeRecordWrong
 }
 
-$reportPath = Join-Path $ExportDir "live_content_report.json"
+$reportPath = Join-Path $ExportDir $ReportName
 try {
     Set-Utf8NoBomContent -Path $reportPath -Value (ConvertTo-Json -InputObject $report -Depth 10)
     Write-Host "Full report saved to $reportPath"

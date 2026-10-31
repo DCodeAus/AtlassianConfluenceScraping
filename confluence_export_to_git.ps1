@@ -29,7 +29,8 @@ to whoever opens it.
 
 Set CONFLUENCE_EXPORT_DIR to skip the folder question.
 
-Supported by Daniel - raise issues with him.
+Something broken or unclear? Raise an issue at
+https://github.com/DCodeAus/AtlassianConfluenceScraping/issues
 #>
 
 param(
@@ -37,10 +38,18 @@ param(
     [string]$ExportDir
 )
 
-# Same Windows PowerShell 5.1 fix as every other script here - keeps .NET's
-# idea of the current folder in step with PowerShell's, so the .NET file
-# write below lands where PowerShell says it will.
-[System.Environment]::CurrentDirectory = (Get-Location).Path
+# Everything the scripts here have in common - the questions, talking to
+# Confluence, reading an export folder - lives in confluence_common.ps1,
+# so a fix there fixes every script at once. It has to be in the same
+# folder as this one.
+$commonScript = Join-Path $PSScriptRoot "confluence_common.ps1"
+if (-not (Test-Path -LiteralPath $commonScript)) {
+    Write-Host "Can't find confluence_common.ps1 - it needs to be in the same folder"
+    Write-Host "as this script. Download the whole repository rather than just this"
+    Write-Host "one file."
+    exit 1
+}
+. $commonScript
 
 # Above this, GitHub warns on push; at 100 MB it refuses the push outright
 # (Azure DevOps is similar). Flagged up front, since finding out at push
@@ -63,26 +72,6 @@ garbled_text_repair_log.json
 Thumbs.db
 desktop.ini
 "@
-
-function Read-HostWithHelp {
-    param([string]$Prompt, [string[]]$HelpText)
-    while ($true) {
-        $answer = Read-Host $Prompt
-        if ($answer -ne "?") {
-            return $answer
-        }
-        foreach ($line in $HelpText) {
-            Write-Host $line
-        }
-    }
-}
-
-function Read-YesNo {
-    # Anything other than "y" counts as no - the safe answer for every
-    # question this script asks.
-    param([string]$Prompt)
-    return (Read-Host "$Prompt (y/N)").Trim().ToLower() -eq "y"
-}
 
 function Invoke-Git {
     # Runs one git command inside the export folder and hands back its
@@ -114,19 +103,13 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-if (-not $ExportDir) {
-    $exportDirHelp = @(
-        "Which folder to turn into a git repo - the folder name you gave the",
-        "extractor (or the Markdown converter) for that space, or its full",
-        "path if it's somewhere else (e.g. a shared drive).",
-        "Leave blank for: confluence_export"
-    )
-    $ExportDir = if ($env:CONFLUENCE_EXPORT_DIR) { $env:CONFLUENCE_EXPORT_DIR } else { (Read-HostWithHelp "Export folder to put into git (blank for 'confluence_export')" $exportDirHelp).Trim() }
-    # Explorer's "Copy as path" and dragging a folder into the window both
-    # wrap the path in quotes - strip them so either works.
-    $ExportDir = $ExportDir.Trim('"').Trim("'")
-    if (-not $ExportDir) { $ExportDir = "confluence_export" }
-}
+$exportDirHelp = @(
+    "Which folder to turn into a git repo - the folder name you gave the",
+    "extractor (or the Markdown converter) for that space, or its full",
+    "path if it's somewhere else (e.g. a shared drive).",
+    "Leave blank for: confluence_export"
+)
+$ExportDir = Read-ExportDir -Value $ExportDir -Prompt "Export folder to put into git (blank for 'confluence_export')" -HelpText $exportDirHelp
 
 if (-not (Test-Path -LiteralPath $ExportDir -PathType Container)) {
     Write-Host "Can't find '$ExportDir' from here - run this from the folder"

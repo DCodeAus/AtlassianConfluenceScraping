@@ -49,21 +49,20 @@ from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
 
+# Everything the scripts here have in common - like asking a question with
+# "?" help - lives in confluence_common.py, so a fix there fixes every
+# script at once. It has to be in the same folder as this one.
+try:
+    from confluence_common import input_with_help
+except ImportError:
+    print("Can't find confluence_common.py (or it's out of date) - it needs to be")
+    print("in the same folder as this script. Download the whole repository")
+    print("rather than just this one file.")
+    raise SystemExit(1)
+
 DEFAULT_ROOTS = ["confluence_export", "confluence_markdown_export"]
 FILE_PATTERNS = ("*.html", "*.md")
 
-
-def input_with_help(prompt, help_lines):
-    """Like input(), but typing a bare "?" prints an explanation of what's
-    being asked for instead of being treated as the actual answer, then
-    asks again - so someone new to this doesn't have to already know what
-    to type before they can find out."""
-    while True:
-        answer = input(prompt)
-        if answer.strip() != "?":
-            return answer
-        for line in help_lines:
-            print(line)
 
 # Python's stdlib "cp1252" codec follows the strict Unicode.org table, which
 # leaves 5 byte values (0x81, 0x8D, 0x8F, 0x90, 0x9D) undefined and refuses

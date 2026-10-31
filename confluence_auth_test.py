@@ -14,53 +14,26 @@ idea as the credentials below.
 Prints a page title on success. 401/403? Read the except block below.
 """
 
-import base64
-import getpass
 import json
 import os
-import ssl
-import urllib.request
-import urllib.parse
 import urllib.error
 
-
-def input_with_help(prompt, help_lines):
-    """Like input(), but typing a bare "?" prints an explanation of what's
-    being asked for instead of being treated as the actual answer, then
-    asks again - so someone new to this doesn't have to already know what
-    to type before they can find out."""
-    while True:
-        answer = input(prompt)
-        if answer != "?":
-            return answer
-        for line in help_lines:
-            print(line)
-
-
-def getpass_with_help(prompt, help_lines):
-    """Same idea as input_with_help, but for a masked password prompt -
-    typing "?" isn't visibly different from typing anything else, so it's
-    only noticed here, after the (masked) input comes back."""
-    while True:
-        answer = getpass.getpass(prompt)
-        if answer != "?":
-            return answer
-        for line in help_lines:
-            print(line)
+# Everything the scripts here have in common - the questions, talking to
+# Confluence, reading an export folder - lives in confluence_common.py, so
+# a fix there fixes every script at once. It has to be in the same folder
+# as this one.
+try:
+    from confluence_common import Confluence, ask_base_url, ask_login, input_with_help
+except ImportError:
+    print("Can't find confluence_common.py (or it's out of date) - it needs to be")
+    print("in the same folder as this script. Download the whole repository")
+    print("rather than just this one file.")
+    raise SystemExit(1)
 
 
 # Set CONFLUENCE_BASE_URL as an env var for unattended runs (cron etc),
 # otherwise it just prompts.
-BASE_URL = os.environ.get("CONFLUENCE_BASE_URL") or input_with_help(
-    "Confluence base URL: ",
-    [
-        "The address of your Confluence site, with no slash on the end.",
-        "Copy it from your browser's address bar while viewing any",
-        "Confluence page, keeping only the part before /display/ or",
-        "/spaces/, e.g. https://confluence.yourcompany.com - if there's",
-        "something in between (like /wiki or /confluence), keep that too.",
-    ],
-).strip()
+BASE_URL = ask_base_url()
 SPACE_KEY = os.environ.get("CONFLUENCE_SPACE_KEY") or input_with_help(
     "Confluence space key: ",
     [
@@ -74,55 +47,17 @@ SPACE_KEY = os.environ.get("CONFLUENCE_SPACE_KEY") or input_with_help(
 
 # Set CONFLUENCE_USERNAME / CONFLUENCE_PASSWORD as env vars for unattended
 # runs (cron etc), otherwise it just prompts.
-USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input_with_help(
-    "Confluence username: ",
-    [
-        "This is the same username you use to log into Confluence in your",
-        "web browser - usually your email address or your company username.",
-        "If you're not sure, open Confluence in a browser first and check",
-        "what you log in with there.",
-    ],
-)
-PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass_with_help(
-    "Confluence password: ",
-    [
-        "This is the same password you use to log into Confluence in your",
-        "web browser. It's masked as you type (you won't see the characters",
-        "appear) - that's normal, just type it and press Enter.",
-    ],
-)
+USERNAME, PASSWORD = ask_login()
 
 # "certificate verify failed" -> your org's internal CA isn't in Python's
-# trust store (your browser trusts it, Python keeps its own list - and
-# unlike the .ps1 version, it does NOT read the Windows cert store). Export
-# the root CA as base64 X.509 from the browser padlock -> certificate
-# viewer -> certification path -> top entry -> export, and point this at it.
-INTERNAL_CA_PATH = None  # e.g. r"C:\certs\company-root-ca.pem"
-VERIFY_SSL = True  # False = skip verification, fine for a five-minute test, don't leave it off
-
-if INTERNAL_CA_PATH:
-    ssl_context = ssl.create_default_context(cafile=INTERNAL_CA_PATH)
-elif not VERIFY_SSL:
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-else:
-    ssl_context = ssl.create_default_context()
-
+# trust store. That's set once for every script, in confluence_common.py
+# (INTERNAL_CA_PATH, or the CONFLUENCE_CA_FILE env var) - see there for
+# how to get the certificate file.
+confluence = Confluence(BASE_URL, USERNAME, PASSWORD)
 params = {"spaceKey": SPACE_KEY, "limit": "1", "expand": "body.storage"}
-query_string = urllib.parse.urlencode(params)
-url = f"{BASE_URL}/rest/api/content?{query_string}"
-
-# Build the basic auth header manually
-credentials = f"{USERNAME}:{PASSWORD}"
-encoded_credentials = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
-
-request = urllib.request.Request(url)
-request.add_header("Authorization", f"Basic {encoded_credentials}")
-request.add_header("Accept", "application/json")
 
 try:
-    with urllib.request.urlopen(request, context=ssl_context) as response:
+    with confluence.open("/rest/api/content", params, want_json=True) as response:
         status_code = response.getcode()
         body = response.read().decode("utf-8")
         print("Status code:", status_code)
@@ -132,6 +67,10 @@ try:
         if results:
             print("Success! First page title:", results[0]["title"])
             print("Total pages in this batch (max 1 requested):", data.get("size"))
+            # Getting a page back doesn't prove the login was used - some
+            # setups let you in as an anonymous visitor instead, which can
+            # still see open spaces. This says which it was.
+            confluence.check_signed_in()
         else:
             print("Connected, but no pages returned. Check SPACE_KEY is correct.")
 
@@ -149,7 +88,7 @@ except urllib.error.HTTPError as e:
 except urllib.error.URLError as e:
     reason_text = str(e.reason)
     if "certificate verify failed" in reason_text.lower():
-        print("SSL certificate verify failed - see the INTERNAL_CA_PATH note above.")
+        print("SSL certificate verify failed - see the INTERNAL_CA_PATH note in confluence_common.py.")
     else:
         print("Connection failed:", e.reason)
         print("Check BASE_URL and that you're on the right network/VPN.")

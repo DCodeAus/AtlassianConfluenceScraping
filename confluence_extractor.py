@@ -35,7 +35,6 @@ ever leaves your machine without this script alongside it, e.g. uploaded
 as its own repo for a teammate.
 """
 
-import base64
 import csv
 import datetime
 import getpass
@@ -43,52 +42,30 @@ import html
 import json
 import os
 import re
-import shutil
-import ssl
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 
-
-def input_with_help(prompt, help_lines):
-    """Like input(), but typing a bare "?" prints an explanation of what's
-    being asked for instead of being treated as the actual answer, then
-    asks again - so someone new to this doesn't have to already know what
-    to type before they can find out."""
-    while True:
-        answer = input(prompt)
-        if answer != "?":
-            return answer
-        for line in help_lines:
-            print(line)
-
-
-def getpass_with_help(prompt, help_lines):
-    """Same idea as input_with_help, but for a masked password prompt -
-    typing "?" isn't visibly different from typing anything else, so it's
-    only noticed here, after the (masked) input comes back."""
-    while True:
-        answer = getpass.getpass(prompt)
-        if answer != "?":
-            return answer
-        for line in help_lines:
-            print(line)
+# Everything the scripts here have in common - the questions, talking to
+# Confluence, reading an export folder - lives in confluence_common.py, so
+# a fix there fixes every script at once. It has to be in the same folder
+# as this one.
+try:
+    from confluence_common import (
+        REQUEST_DELAY_SECONDS, Confluence, ask_base_url, ask_login,
+        input_with_help, read_json, sanitise_filename, write_export_source,
+    )
+except ImportError:
+    print("Can't find confluence_common.py (or it's out of date) - it needs to be")
+    print("in the same folder as this script. Download the whole repository")
+    print("rather than just this one file.")
+    raise SystemExit(1)
 
 
 # Asked every run rather than hardcoded, so there's nothing identifying
 # your Confluence instance sitting in this file to accidentally commit or
 # share. Env vars for unattended runs, otherwise prompts.
-BASE_URL = os.environ.get("CONFLUENCE_BASE_URL") or input_with_help(
-    "Confluence base URL: ",
-    [
-        "The address of your Confluence site, with no slash on the end.",
-        "Copy it from your browser's address bar while viewing any",
-        "Confluence page, keeping only the part before /display/ or",
-        "/spaces/, e.g. https://confluence.yourcompany.com - if there's",
-        "something in between (like /wiki or /confluence), keep that too.",
-    ],
-).strip()
+BASE_URL = ask_base_url()
 
 # Only actually used if you leave the "page ID" prompt blank further down
 # (ignored if you're pulling just one specific page), but asked up front
@@ -131,23 +108,7 @@ OUTPUT_DIR = os.environ.get("CONFLUENCE_EXPORT_DIR") or input_with_help(
 ).strip() or _suggested_output_dir
 
 # env vars for unattended runs, otherwise prompts
-USERNAME = os.environ.get("CONFLUENCE_USERNAME") or input_with_help(
-    "Confluence username: ",
-    [
-        "This is the same username you use to log into Confluence in your",
-        "web browser - usually your email address or your company username.",
-        "If you're not sure, open Confluence in a browser first and check",
-        "what you log in with there.",
-    ],
-)
-PASSWORD = os.environ.get("CONFLUENCE_PASSWORD") or getpass_with_help(
-    "Confluence password: ",
-    [
-        "This is the same password you use to log into Confluence in your",
-        "web browser. It's masked as you type (you won't see the characters",
-        "appear) - that's normal, just type it and press Enter.",
-    ],
-)
+USERNAME, PASSWORD = ask_login()
 
 # Asked every run so it's never silently assumed which mode you're about to
 # get. Leave blank for the whole space, or paste a page ID (from the page
@@ -168,96 +129,14 @@ PAGE_ID = os.environ.get("CONFLUENCE_PAGE_ID") or input_with_help(
     ],
 ).strip()
 
-INTERNAL_CA_PATH = None   # e.g. r"C:\certs\company-root-ca.pem"
-VERIFY_SSL = True
-
 PAGE_SIZE = 25   # seemed like a safe default, never bothered tuning it
-REQUEST_DELAY_SECONDS = 0.3   # be a polite citizen
 
+# The connection itself - SSL settings, retrying, and batching through long
+# lists all live in confluence_common.py.
+CONFLUENCE = Confluence(BASE_URL, USERNAME, PASSWORD)
+api_get = CONFLUENCE.get_json
+download_binary = CONFLUENCE.download
 
-def build_ssl_context():
-    if INTERNAL_CA_PATH:
-        return ssl.create_default_context(cafile=INTERNAL_CA_PATH)
-    if not VERIFY_SSL:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
-    return ssl.create_default_context()
-
-def build_auth_header():
-    pair = f"{USERNAME}:{PASSWORD}"
-    encoded = base64.b64encode(pair.encode("utf-8")).decode("ascii")
-    return f"Basic {encoded}"
-
-
-AUTH_HEADER = build_auth_header()
-SSL_CONTEXT = build_ssl_context()
-
-RETRY_MAX_ATTEMPTS = 3
-RETRY_BASE_DELAY_SECONDS = 1.0
-
-
-def request_with_retry(func):
-    """Retries on 5xx/connection errors, not on 4xx (bad creds won't fix
-    themselves). Without this one flaky request mid-run kills the script."""
-    last_error = None
-    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
-        try:
-            return func()
-        except urllib.error.HTTPError as e:
-            last_error = e
-            if e.code < 500 or attempt == RETRY_MAX_ATTEMPTS:
-                raise
-        except urllib.error.URLError as e:
-            last_error = e
-            if attempt == RETRY_MAX_ATTEMPTS:
-                raise
-
-        wait = RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
-        print(f"    Request failed ({last_error}), retrying in {wait:.1f}s (attempt {attempt}/{RETRY_MAX_ATTEMPTS})...")
-        time.sleep(wait)
-
-
-def api_get(path, params=None):
-    query = f"?{urllib.parse.urlencode(params)}" if params else ""
-    url = f"{BASE_URL}{path}{query}"
-
-    def do_request():
-        request = urllib.request.Request(url)
-        request.add_header("Authorization", AUTH_HEADER)
-        request.add_header("Accept", "application/json")
-
-        with urllib.request.urlopen(request, context=SSL_CONTEXT) as response:
-            return json.loads(response.read().decode("utf-8"))
-
-    return request_with_retry(do_request)
-
-
-def download_binary(url_path, dest_path):
-    url = url_path if url_path.startswith("http") else f"{BASE_URL}{url_path}"
-
-    def do_request():
-        request = urllib.request.Request(url)
-        request.add_header("Authorization", AUTH_HEADER)
-
-        with urllib.request.urlopen(request, context=SSL_CONTEXT) as response:
-            with open(dest_path, "wb") as f:
-                # copyfileobj streams the download straight to disk in
-                # chunks - response.read() would pull the whole thing
-                # into memory first, which is fine for a screenshot but
-                # not for a big video or design file attached to a page.
-                shutil.copyfileobj(response, f)
-
-    request_with_retry(do_request)
-
-
-def sanitise_filename(name):
-    # covers the invalid chars across Windows/Mac/Linux, not just this OS
-    invalid_chars = '<>:"/\\|?*'
-    for ch in invalid_chars:
-        name = name.replace(ch, "_")
-    return name.strip()
 
 # A real attachment name can be long ("Q3 2024 Regional Sales Review -
 # Final (reviewed by finance).xlsx"), and this project's own folder depth
@@ -299,37 +178,17 @@ def make_unique_filename(name, used_names):
 
 
 def get_all_pages_in_space():
-    all_pages = []
-    start = 0
-
-    while True:
-        print(f"Fetching page list: start={start}, limit={PAGE_SIZE}")
-        data = api_get(
-            "/rest/api/content",
-            {
-                "spaceKey": SPACE_KEY,
-                "type": "page",
-                "start": start,
-                "limit": PAGE_SIZE,
-                "expand": "body.storage,version,ancestors,metadata.labels,history",
-            },
-        )
-
-        results = data.get("results", [])
-        all_pages.extend(results)
-
-        # Stop on an EMPTY batch, not a short one, and move on by however
-        # many actually came back rather than by PAGE_SIZE. Some Confluence
-        # setups quietly hand back fewer than asked for (a server-side cap
-        # on page size), and treating that as "last batch" - or skipping
-        # ahead by the full PAGE_SIZE - would silently miss pages.
-        if not results:
-            break
-
-        start += len(results)
-        time.sleep(REQUEST_DELAY_SECONDS)
-
-    return all_pages
+    return CONFLUENCE.get_all(
+        "/rest/api/content",
+        {
+            "spaceKey": SPACE_KEY,
+            "type": "page",
+            "expand": "body.storage,version,ancestors,metadata.labels,history",
+        },
+        limit=PAGE_SIZE,
+        delay=REQUEST_DELAY_SECONDS,
+        on_batch=lambda start: print(f"Fetching page list: start={start}, limit={PAGE_SIZE}"),
+    )
 
 
 def get_single_page(page_id):
@@ -421,28 +280,14 @@ def write_pages_index(manifest, path):
 
 
 def get_attachments_for_page(page_id):
-    attachments = []
-    start = 0
-    limit = 50
-
-    while True:
-        data = api_get(
-            f"/rest/api/content/{page_id}/child/attachment",
-            {"start": start, "limit": limit},
-        )
-        results = data.get("results", [])
-        attachments.extend(results)
-
-        # Same as the page list above - empty batch means done, and move
-        # on by however many actually came back.
-        if not results:
-            break
-        start += len(results)
-
-    return attachments
+    return CONFLUENCE.get_all(f"/rest/api/content/{page_id}/child/attachment", {})
 
 
 def main():
+    # Before anything else, so a login that didn't work shows up now
+    # rather than as pages quietly missing at the end.
+    CONFLUENCE.check_signed_in()
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     pages_dir = os.path.join(OUTPUT_DIR, "pages")
     os.makedirs(pages_dir, exist_ok=True)
@@ -453,10 +298,8 @@ def main():
     # it's there even if this run stops partway. Never any login details.
     # A one-page re-run into a folder that already has one leaves it
     # alone, so it doesn't swap the whole space's details for one page's.
-    source_path = os.path.join(OUTPUT_DIR, "export_source.json")
-    if not (PAGE_ID and os.path.isfile(source_path)):
-        with open(source_path, "w", encoding="utf-8") as f:
-            json.dump({"baseUrl": BASE_URL.rstrip("/"), "spaceKey": SPACE_KEY, "pageId": PAGE_ID}, f, indent=2)
+    if not (PAGE_ID and os.path.isfile(os.path.join(OUTPUT_DIR, "export_source.json"))):
+        write_export_source(OUTPUT_DIR, BASE_URL, SPACE_KEY, PAGE_ID)
 
     if PAGE_ID:
         print(f"Fetching single page (id {PAGE_ID})...")
@@ -610,18 +453,15 @@ def main():
     merging = bool(PAGE_ID) and os.path.isfile(manifest_path)
     if merging:
         redone_ids = {p["id"] for p in pages}
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            existing_manifest = json.load(f)
+        existing_manifest = read_json(manifest_path)
         new_entries = {entry["id"]: entry for entry in manifest}
         # Keeps each page in its original place, swapping in the new entry.
         merged = [new_entries.pop(entry["id"], entry) for entry in existing_manifest]
         manifest = merged + list(new_entries.values())
         if os.path.isfile(failures_path):
-            with open(failures_path, "r", encoding="utf-8") as f:
-                failures = [fail for fail in json.load(f) if fail["id"] not in redone_ids] + failures
+            failures = [fail for fail in read_json(failures_path) if fail["id"] not in redone_ids] + failures
         if os.path.isfile(user_display_names_path):
-            with open(user_display_names_path, "r", encoding="utf-8") as f:
-                user_display_names = {**json.load(f), **user_display_names}
+            user_display_names = {**read_json(user_display_names_path), **user_display_names}
         print(f"\nUpdated {len(redone_ids)} page(s) in the existing export - the other pages already there are kept.")
 
     if user_display_names:
@@ -738,7 +578,7 @@ if __name__ == "__main__":
             print("Creds are fine, you just don't have read access to this space.")
     except urllib.error.URLError as e:
         if "certificate verify failed" in str(e.reason).lower():
-            print("SSL certificate verify failed. Set INTERNAL_CA_PATH above, see")
-            print("confluence_auth_test.py for the cert export instructions.")
+            print("SSL certificate verify failed. Set INTERNAL_CA_PATH in")
+            print("confluence_common.py (or CONFLUENCE_CA_FILE) - see there for how.")
         else:
             print(f"Connection failed: {e.reason}")

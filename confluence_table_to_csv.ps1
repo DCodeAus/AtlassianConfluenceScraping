@@ -27,7 +27,8 @@ same export folder name you gave confluence_extractor.ps1 for whichever
 space this is. Set CONFLUENCE_EXPORT_DIR and CONFLUENCE_TABLE_EXPORT_DIR
 to fix both in advance for unattended runs.
 
-Supported by Daniel - raise issues with him.
+Something broken or unclear? Raise an issue at
+https://github.com/DCodeAus/AtlassianConfluenceScraping/issues
 #>
 
 # The one thing you actually have to supply when running this script -
@@ -39,24 +40,20 @@ param(
     [string]$PageQuery
 )
 
-Add-Type -AssemblyName System.Xml.Linq
-
-function Read-HostWithHelp {
-    # Like Read-Host, but typing a bare "?" prints an explanation of what's
-    # being asked for instead of being treated as the actual answer, then
-    # asks again - so someone new to this doesn't have to already know what
-    # to type before they can find out.
-    param([string]$Prompt, [string[]]$HelpText)
-    while ($true) {
-        $answer = Read-Host $Prompt
-        if ($answer -ne "?") {
-            return $answer
-        }
-        foreach ($line in $HelpText) {
-            Write-Host $line
-        }
-    }
+# Everything the scripts here have in common - the questions, talking to
+# Confluence, reading an export folder - lives in confluence_common.ps1,
+# so a fix there fixes every script at once. It has to be in the same
+# folder as this one.
+$commonScript = Join-Path $PSScriptRoot "confluence_common.ps1"
+if (-not (Test-Path -LiteralPath $commonScript)) {
+    Write-Host "Can't find confluence_common.ps1 - it needs to be in the same folder"
+    Write-Host "as this script. Download the whole repository rather than just this"
+    Write-Host "one file."
+    exit 1
 }
+. $commonScript
+
+Add-Type -AssemblyName System.Xml.Linq
 
 $pageQueryHelp = @(
     "Type the page's exact title as it appears in Confluence (not case",
@@ -78,70 +75,18 @@ $exportDirHelp = @(
     "for this space.",
     "Leave blank for: confluence_export"
 )
-$exportDir = if ($env:CONFLUENCE_EXPORT_DIR) { $env:CONFLUENCE_EXPORT_DIR } else { (Read-HostWithHelp "Export folder (blank for 'confluence_export')" $exportDirHelp).Trim() }
-if (-not $exportDir) { $exportDir = "confluence_export" }
+$exportDir = Read-ExportDir -Prompt "Export folder (blank for 'confluence_export')" -HelpText $exportDirHelp
 
 # Suggest a matching output folder name, same idea as the other scripts,
 # so a second space's table CSV doesn't land in (and overwrite) the first
 # one's.
-$suggestedTableExportDir = if ($exportDir -eq "confluence_export") {
-    "confluence_table_export"
-} elseif ($exportDir.StartsWith("confluence_export")) {
-    "confluence_table_export" + $exportDir.Substring("confluence_export".Length)
-} else {
-    "confluence_table_export_$exportDir"
-}
+$suggestedTableExportDir = Get-SuggestedOutputDir -ExportDir $exportDir -Prefix "confluence_table_export"
 $tableExportDirHelp = @(
     "Where the CSV should go.",
     "Leave blank for: $suggestedTableExportDir"
 )
 $tableExportDir = if ($env:CONFLUENCE_TABLE_EXPORT_DIR) { $env:CONFLUENCE_TABLE_EXPORT_DIR } else { (Read-HostWithHelp "Output folder (blank for '$suggestedTableExportDir')" $tableExportDirHelp).Trim() }
 if (-not $tableExportDir) { $tableExportDir = $suggestedTableExportDir }
-
-$namespaceDeclarations = @'
-xmlns:ac="http://www.atlassian.com/schema/confluence/4/ac/"
-xmlns:ri="http://www.atlassian.com/schema/confluence/4/ri/"
-'@
-
-# Same list as the other converters - see confluence_html_to_markdown.ps1
-# for why these specific ones.
-$knownHtmlEntities = @{
-    "nbsp"   = [char]0x0020
-    "mdash"  = [char]0x2014
-    "ndash"  = [char]0x2013
-    "hellip" = [char]0x2026
-    "lsquo"  = [char]0x2018
-    "rsquo"  = [char]0x2019
-    "ldquo"  = [char]0x201C
-    "rdquo"  = [char]0x201D
-    "trade"  = [char]0x2122
-    "copy"   = [char]0x00A9
-    "reg"    = [char]0x00AE
-}
-
-function ConvertTo-XmlSafeEntities {
-    # Swaps known HTML entities for the real character they stand for, so
-    # the XML parser doesn't choke on them.
-    param([string]$RawHtml)
-    $result = $RawHtml
-    foreach ($name in $knownHtmlEntities.Keys) {
-        $result = $result.Replace("&$name;", $knownHtmlEntities[$name])
-    }
-    return $result
-}
-
-function Get-SanitisedFilename {
-    # Windows/Mac/Linux all disallow certain characters in file names -
-    # this swaps every one of them for an underscore, so a page title can
-    # always be safely used as part of a CSV file's name.
-    param([string]$Name)
-    $invalidChars = '<>:"/\|?*'
-    $result = $Name
-    foreach ($ch in $invalidChars.ToCharArray()) {
-        $result = $result.Replace([string]$ch, "_")
-    }
-    return $result.Trim()
-}
 
 function Convert-NodeToPlainText {
     # Plain text only - a CSV cell has no room for links/formatting, just
@@ -233,17 +178,10 @@ function Find-Page {
 
 # --- Main ---
 
-$manifestPath = Join-Path $exportDir "manifest.json"
-if (-not (Test-Path $manifestPath)) {
-    Write-Host "Can't find manifest.json at $manifestPath."
-    Write-Host "Run confluence_extractor.ps1 (or .py) first."
-    exit 1
-}
+$export = Get-ExportManifest -Dir $exportDir
+$manifestPath = $export.Path
 
-# @()-wrapped: manifest.json legitimately can have exactly one page (the
-# extractor's single-page mode), and ConvertFrom-Json hands back a bare
-# object instead of a one-item array for a one-element JSON array.
-$manifest = @(Get-Content $manifestPath -Raw | ConvertFrom-Json)
+$manifest = $export.Manifest
 
 $pageEntry = Find-Page -manifest $manifest -Query $PageQuery
 if (-not $pageEntry) {

@@ -58,34 +58,18 @@ param(
     [switch]$Debug
 )
 
-# On Windows PowerShell 5.1, "cd"/Set-Location only moves PowerShell's OWN
-# idea of where you are - it does NOT tell .NET's file-reading/writing
-# functions (which this script uses directly, for reasons explained where
-# they're used), which silently keep using wherever this PowerShell window
-# first opened. Real, confirmed failure mode in a sibling script: folders/
-# files visibly show up in the right place (PowerShell cmdlets follow
-# you), but a .NET read or write then fails with "Could not find a part
-# of the path", because .NET is still looking somewhere else entirely.
-# This line keeps the two in sync, right from the start, regardless of
-# how this window was opened or what you "cd"'d through to get here.
-[System.Environment]::CurrentDirectory = (Get-Location).Path
-
-function Read-HostWithHelp {
-    # Like Read-Host, but typing a bare "?" prints an explanation of what's
-    # being asked for instead of being treated as the actual answer, then
-    # asks again - so someone new to this doesn't have to already know what
-    # to type before they can find out.
-    param([string]$Prompt, [string[]]$HelpText)
-    while ($true) {
-        $answer = Read-Host $Prompt
-        if ($answer -ne "?") {
-            return $answer
-        }
-        foreach ($line in $HelpText) {
-            Write-Host $line
-        }
-    }
+# Everything the scripts here have in common - like asking a question
+# with "?" help - lives in confluence_common.ps1,
+# so a fix there fixes every script at once. It has to be in the same
+# folder as this one.
+$commonScript = Join-Path $PSScriptRoot "confluence_common.ps1"
+if (-not (Test-Path -LiteralPath $commonScript)) {
+    Write-Host "Can't find confluence_common.ps1 - it needs to be in the same folder"
+    Write-Host "as this script. Download the whole repository rather than just this"
+    Write-Host "one file."
+    exit 1
 }
+. $commonScript
 
 # Strict fallbacks so a failed round-trip throws instead of silently
 # substituting '?' or U+FFFD - that failure is exactly how genuinely

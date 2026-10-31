@@ -36,38 +36,24 @@ you are, but doesn't tell .NET's file-writing functions, which quietly
 keep using wherever the window first opened instead. Grab a fresh copy
 if you're still seeing this.
 
-Supported by Daniel - raise issues with him.
+Something broken or unclear? Raise an issue at
+https://github.com/DCodeAus/AtlassianConfluenceScraping/issues
 #>
 
-# On Windows PowerShell 5.1, "cd"/Set-Location only moves PowerShell's OWN
-# idea of where you are - it does NOT tell .NET's file-writing functions
-# (which this script uses directly, for reasons explained where they're
-# used), which silently keep using wherever this PowerShell window first
-# opened. Real, confirmed failure mode: folders visibly get created in
-# the right place (PowerShell cmdlets like New-Item follow you), but
-# every file write into them then fails with "Could not find a part of
-# the path", because .NET is still looking somewhere else entirely. This
-# line keeps the two in sync, right from the start, regardless of how
-# this window was opened or what you "cd"'d through to get here.
-[System.Environment]::CurrentDirectory = (Get-Location).Path
+# Everything the scripts here have in common - the questions, talking to
+# Confluence, reading an export folder - lives in confluence_common.ps1,
+# so a fix there fixes every script at once. It has to be in the same
+# folder as this one.
+$commonScript = Join-Path $PSScriptRoot "confluence_common.ps1"
+if (-not (Test-Path -LiteralPath $commonScript)) {
+    Write-Host "Can't find confluence_common.ps1 - it needs to be in the same folder"
+    Write-Host "as this script. Download the whole repository rather than just this"
+    Write-Host "one file."
+    exit 1
+}
+. $commonScript
 
 Add-Type -AssemblyName System.Xml.Linq
-
-function Read-HostWithHelp {
-    # Like Read-Host, but typing a bare "?" prints an explanation of what's
-    # being asked for instead of being treated as the actual answer, then
-    # asks again.
-    param([string]$Prompt, [string[]]$HelpText)
-    while ($true) {
-        $answer = Read-Host $Prompt
-        if ($answer -ne "?") {
-            return $answer
-        }
-        foreach ($line in $HelpText) {
-            Write-Host $line
-        }
-    }
-}
 
 # Asked every run rather than hardcoded, so pasting a second space's
 # export just means answering this differently - give it the exact same
@@ -79,19 +65,12 @@ $exportDirHelp = @(
     "for this space.",
     "Leave blank for: confluence_export"
 )
-$exportDir = if ($env:CONFLUENCE_EXPORT_DIR) { $env:CONFLUENCE_EXPORT_DIR } else { (Read-HostWithHelp "Export folder (blank for 'confluence_export')" $exportDirHelp).Trim() }
-if (-not $exportDir) { $exportDir = "confluence_export" }
+$exportDir = Read-ExportDir -Prompt "Export folder (blank for 'confluence_export')" -HelpText $exportDirHelp
 
 # Suggest a matching output folder name, same idea as
 # confluence_html_to_markdown.ps1, so a second space's paste-ready HTML
 # doesn't land in (and overwrite) the first one's.
-$suggestedPasteExportDir = if ($exportDir -eq "confluence_export") {
-    "confluence_sharepoint_paste"
-} elseif ($exportDir.StartsWith("confluence_export")) {
-    "confluence_sharepoint_paste" + $exportDir.Substring("confluence_export".Length)
-} else {
-    "confluence_sharepoint_paste_$exportDir"
-}
+$suggestedPasteExportDir = Get-SuggestedOutputDir -ExportDir $exportDir -Prefix "confluence_sharepoint_paste"
 $pasteExportDirHelp = @(
     "Where the paste-ready .html files should go.",
     "Leave blank for: $suggestedPasteExportDir"
@@ -101,13 +80,8 @@ if (-not $pasteExportDir) { $pasteExportDir = $suggestedPasteExportDir }
 
 $classificationPath = Join-Path $exportDir "page_destinations.csv"
 
-$manifestPath = Join-Path $exportDir "manifest.json"
-
-if (-not (Test-Path $manifestPath)) {
-    Write-Host "Can't find manifest.json at $manifestPath."
-    Write-Host "Run confluence_extractor.ps1 first."
-    exit 1
-}
+$export = Get-ExportManifest -Dir $exportDir
+$manifestPath = $export.Path
 
 if (-not (Test-Path $classificationPath)) {
     Write-Host "Can't find $classificationPath."
@@ -116,10 +90,7 @@ if (-not (Test-Path $classificationPath)) {
     exit 1
 }
 
-# @()-wrapped: manifest.json legitimately can have exactly one page (the
-# extractor's single-page mode), and ConvertFrom-Json hands back a bare
-# object instead of a one-item array for a one-element JSON array.
-$manifest = @(Get-Content $manifestPath -Raw | ConvertFrom-Json)
+$manifest = $export.Manifest
 
 $classificationLookup = @{}
 foreach ($row in (Import-Csv -Path $classificationPath)) {
@@ -158,41 +129,6 @@ foreach ($pageEntry in $manifest) {
     }
 }
 
-# Same namespace/entity handling as confluence_html_to_markdown.ps1 - see
-# that script's comments for why these are needed.
-$namespaceDeclarations = @'
-xmlns:ac="http://www.atlassian.com/schema/confluence/4/ac/"
-xmlns:ri="http://www.atlassian.com/schema/confluence/4/ri/"
-'@
-
-# Named HTML entities Confluence content commonly contains, mapped to
-# their actual character (see confluence_html_to_markdown.ps1 for the
-# full explanation of why this list exists at all).
-$knownHtmlEntities = @{
-    "nbsp"   = [char]0x0020
-    "mdash"  = [char]0x2014
-    "ndash"  = [char]0x2013
-    "hellip" = [char]0x2026
-    "lsquo"  = [char]0x2018
-    "rsquo"  = [char]0x2019
-    "ldquo"  = [char]0x201C
-    "rdquo"  = [char]0x201D
-    "trade"  = [char]0x2122
-    "copy"   = [char]0x00A9
-    "reg"    = [char]0x00AE
-}
-
-function ConvertTo-XmlSafeEntities {
-    # Swaps known HTML entities for the real character they stand for, so
-    # the XML parser doesn't choke on them.
-    param([string]$RawHtml)
-    $result = $RawHtml
-    foreach ($name in $knownHtmlEntities.Keys) {
-        $result = $result.Replace("&$name;", $knownHtmlEntities[$name])
-    }
-    return $result
-}
-
 function ConvertTo-EscapedHtmlText {
     # Text pulled out of the XML is plain decoded content, not HTML-escaped
     # - a literal <, >, or & in the original page text would otherwise be
@@ -215,45 +151,10 @@ function ConvertTo-EscapedHtmlAttr {
 # right file.
 $script:currentAttachmentMap = @{}
 
-function Get-AttachmentMap {
-    # Turns one page's "attachments" manifest entry into a simple lookup:
-    # original Confluence filename -> whatever it actually got saved as
-    # on disk.
-    param($attachments)
-
-    $map = @{}
-    foreach ($entry in $attachments) {
-        if ($entry.PSObject.Properties.Match("filename").Count -gt 0 -and $entry.PSObject.Properties.Match("saved_as").Count -gt 0) {
-            $map[$entry.filename] = $entry.saved_as
-        }
-        else {
-            # Manifest from before this mapping existed - best guess is
-            # that the saved name matches the original one-for-one.
-            $map[[string]$entry] = [string]$entry
-        }
-    }
-    return $map
-}
-
 # Loaded once (see the main loop below) from user_display_names.json -
 # @mentions only carry an opaque userkey/username in the storage HTML,
 # this is the extractor's best-effort resolution of those to a real name.
 $script:userDisplayNames = @{}
-
-function Get-UserDisplayNames {
-    # Loads the userkey/username -> real name lookup table the extractor
-    # built, if one exists.
-    $path = Join-Path $exportDir "user_display_names.json"
-    if (-not (Test-Path $path)) {
-        return @{}
-    }
-    $map = @{}
-    $data = Get-Content $path -Raw | ConvertFrom-Json
-    foreach ($property in $data.PSObject.Properties) {
-        $map[$property.Name] = $property.Value
-    }
-    return $map
-}
 
 function Convert-NodeToHtml {
     # Walks an element's children in document order (text + child elements),
@@ -557,7 +458,7 @@ $pageIndex = 0
 # stopping the whole run.
 $warnings = @()
 
-$script:userDisplayNames = Get-UserDisplayNames
+$script:userDisplayNames = Get-UserDisplayNames -Dir $exportDir
 
 foreach ($pageEntry in $sharePointPages) {
     $pageIndex++

@@ -32,11 +32,27 @@ in the first place.
 
 import csv
 import glob
-import json
 import os
 import re
 import shutil
 import xml.etree.ElementTree as ET
+
+# Everything the scripts here have in common - the questions, reading an
+# export folder, making sense of Confluence's page HTML - lives in
+# confluence_common.py, so a fix there fixes every script at once. It has
+# to be in the same folder as this one.
+try:
+    from confluence_common import (
+        NAMESPACE_DECLARATIONS, ask_export_dir, build_attachment_map,
+        escape_non_xml_entities, find_child_by_local_name, get_attr,
+        input_with_help, load_export_manifest, load_user_display_names,
+        local_name, normalise_relative_path, suggest_output_dir,
+    )
+except ImportError:
+    print("Can't find confluence_common.py (or it's out of date) - it needs to be")
+    print("in the same folder as this script. Download the whole repository")
+    print("rather than just this one file.")
+    raise SystemExit(1)
 
 # EXPORT_DIR / MARKDOWN_EXPORT_DIR / CLASSIFICATION_PATH are set at the top
 # of main() instead of here, since which export to convert is asked at
@@ -46,61 +62,6 @@ MARKDOWN_EXPORT_DIR = "confluence_markdown_export"
 CLASSIFICATION_PATH = os.path.join(EXPORT_DIR, "page_destinations.csv")
 CSV_FIELDNAMES = ["id", "title", "destination"]
 
-
-def input_with_help(prompt, help_lines):
-    """Like input(), but typing a bare "?" prints an explanation of what's
-    being asked for instead of being treated as the actual answer, then
-    asks again - so someone new to this doesn't have to already know what
-    to type before they can find out."""
-    while True:
-        answer = input(prompt)
-        if answer.strip() != "?":
-            return answer
-        for line in help_lines:
-            print(line)
-
-# Confluence storage format mixes plain XHTML with its own ac:/ri: prefixed
-# elements (macros, images, attachment refs) - declare the namespaces so the
-# parser doesn't choke on them.
-NAMESPACE_DECLARATIONS = (
-    'xmlns:ac="http://www.atlassian.com/schema/confluence/4/ac/" '
-    'xmlns:ri="http://www.atlassian.com/schema/confluence/4/ri/"'
-)
-
-
-# Named entities that turn up in content pasted from Word/Outlook. XML only
-# knows amp/lt/gt/apos/quot, so anything else here crashes ET.fromstring on
-# an otherwise fine page. Hit a new one? The error names it - add it below.
-KNOWN_HTML_ENTITIES = {
-    "nbsp": " ",
-    "mdash": "—",
-    "ndash": "–",
-    "hellip": "…",
-    "lsquo": "‘",
-    "rsquo": "’",
-    "ldquo": "“",
-    "rdquo": "”",
-    "trade": "™",
-    "copy": "©",
-    "reg": "®",
-}
-
-
-def escape_non_xml_entities(raw_html):
-    for name, char in KNOWN_HTML_ENTITIES.items():
-        raw_html = raw_html.replace(f"&{name};", char)
-    return raw_html
-
-
-def local_name(tag):
-    # ElementTree prefixes qualified tags/attrs with {namespace}, strip it
-    return tag.split("}", 1)[1] if "}" in tag else tag
-
-def find_child_by_local_name(elem, name):
-    for child in elem:
-        if local_name(child.tag) == name:
-            return child
-    return None
 
 def find_descendant_by_local_name(elem, name):
     # Like find_child_by_local_name, but looks at every level below elem,
@@ -112,45 +73,16 @@ def find_descendant_by_local_name(elem, name):
             return descendant
     return None
 
-def get_attr(elem, local_attr_name):
-    for key, value in elem.attrib.items():
-        if local_name(key) == local_attr_name:
-            return value
-    return None
-
-
 # Set once per page (see main()) to that page's manifest "attachments" entry,
 # mapping the original Confluence filename to whatever it actually got saved
 # as - the image tag handler below consults it to build a working link.
 CURRENT_ATTACHMENT_MAP = {}
 
 
-def build_attachment_map(attachments):
-    attachment_map = {}
-    for entry in attachments:
-        if isinstance(entry, dict):
-            attachment_map[entry["filename"]] = entry["saved_as"]
-        else:
-            # Manifest from before this mapping existed: the saved filename
-            # was assumed to match the original one-for-one, which is the
-            # best we can do without re-extracting.
-            attachment_map[entry] = entry
-    return attachment_map
-
-
 # Loaded once (see main()) from user_display_names.json - @mentions only
 # carry an opaque userkey/username in the storage HTML, this is the
 # extractor's best-effort resolution of those to an actual name.
 USER_DISPLAY_NAMES = {}
-
-
-def load_user_display_names():
-    path = os.path.join(EXPORT_DIR, "user_display_names.json")
-    if not os.path.exists(path):
-        return {}
-    # utf-8-sig - see the matching comment on manifest.json above.
-    with open(path, "r", encoding="utf-8-sig") as f:
-        return json.load(f)
 
 
 def convert_node_to_markdown(elem, list_depth=0):
@@ -361,14 +293,6 @@ def convert_element_to_markdown(elem, list_depth):
 
     # Unknown tag: recurse into it so we don't lose the text inside
     return convert_node_to_markdown(elem, list_depth)
-
-
-def normalise_relative_path(path_str):
-    """The manifest's folder paths may use backslashes (written on Windows,
-    or by the .ps1 extractor) or forward slashes (written on Mac/Linux).
-    Normalise to whatever this OS actually uses before joining paths."""
-    parts = re.split(r"[\\/]+", path_str)
-    return os.path.join(*parts) if parts else path_str
 
 
 # First run: no CSV yet, so we generate one (id/title/destination, blank)
@@ -602,7 +526,7 @@ def main():
     # just means answering this differently - give it the exact same name
     # you gave the extractor for that space. Set CONFLUENCE_EXPORT_DIR for
     # unattended runs.
-    EXPORT_DIR = os.environ.get("CONFLUENCE_EXPORT_DIR") or input_with_help(
+    EXPORT_DIR = ask_export_dir(
         "Export folder to convert (blank for 'confluence_export'): ",
         [
             "Which extraction to convert - the exact folder name you gave",
@@ -610,18 +534,13 @@ def main():
             "confluence_extractor.py/.ps1 for this space.",
             "Leave blank for: confluence_export",
         ],
-    ).strip() or "confluence_export"
+    )
 
     # Suggest a matching output folder name - confluence_export_TEAM
     # becomes confluence_markdown_export_TEAM - so converting a second
     # space's export lands in its own Markdown folder instead of merging
     # into the first space's output.
-    if EXPORT_DIR == "confluence_export":
-        suggested_markdown_export_dir = "confluence_markdown_export"
-    elif EXPORT_DIR.startswith("confluence_export"):
-        suggested_markdown_export_dir = "confluence_markdown_export" + EXPORT_DIR[len("confluence_export"):]
-    else:
-        suggested_markdown_export_dir = f"confluence_markdown_export_{EXPORT_DIR}"
+    suggested_markdown_export_dir = suggest_output_dir(EXPORT_DIR, "confluence_markdown_export")
 
     MARKDOWN_EXPORT_DIR = os.environ.get("CONFLUENCE_MARKDOWN_EXPORT_DIR") or input_with_help(
         f"Markdown output folder (blank for '{suggested_markdown_export_dir}'): ",
@@ -633,21 +552,7 @@ def main():
 
     CLASSIFICATION_PATH = os.path.join(EXPORT_DIR, "page_destinations.csv")
 
-    manifest_path = os.path.join(EXPORT_DIR, "manifest.json")
-
-    if not os.path.exists(manifest_path):
-        print(f"Can't find manifest.json at {manifest_path}.")
-        print("Run confluence_extractor.py (or .ps1) first, or check EXPORT_DIR points at the right spot.")
-        return
-
-    # utf-8-sig, not utf-8: if manifest.json was written by
-    # confluence_extractor.ps1 on Windows PowerShell 5.1, Set-Content
-    # -Encoding UTF8 adds a BOM there (unlike this Python extractor, and
-    # unlike PowerShell 7's Set-Content) - plain "utf-8" chokes outright
-    # on that BOM with a JSONDecodeError. utf-8-sig handles a manifest
-    # with or without one.
-    with open(manifest_path, "r", encoding="utf-8-sig") as f:
-        manifest = json.load(f)
+    manifest, manifest_path = load_export_manifest(EXPORT_DIR)
 
     for page_entry in manifest:
         page_entry["id"] = str(page_entry["id"])
@@ -657,7 +562,7 @@ def main():
         return
 
     global USER_DISPLAY_NAMES
-    USER_DISPLAY_NAMES = load_user_display_names()
+    USER_DISPLAY_NAMES = load_user_display_names(EXPORT_DIR)
 
     # each page lands in a subfolder matching its classification
     # (azure/sharepoint/discard), or "unsorted" if the CSV row is
