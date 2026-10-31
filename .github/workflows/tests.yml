@@ -1,0 +1,29 @@
+# Runs tests/run_tests.py on every push and pull request: every script, in
+# both Python and PowerShell, against the fake Confluence in tests/. GitHub's
+# Ubuntu machines come with Python 3, PowerShell 7 and git already
+# installed, so there's nothing to set up.
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Check the .ps1 files' encoding
+        shell: pwsh
+        run: ./check_script_encoding.ps1
+
+      - name: Run every script against the fake Confluence
+        run: python3 tests/run_tests.py

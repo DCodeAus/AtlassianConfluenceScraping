@@ -6,6 +6,7 @@
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3%2C%20stdlib--only-3776AB?logo=python&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![tests](https://github.com/DCodeAus/AtlassianConfluenceScraping/actions/workflows/tests.yml/badge.svg)](https://github.com/DCodeAus/AtlassianConfluenceScraping/actions/workflows/tests.yml)
 
 Pulls documentation out of a self-hosted Confluence instance and turns it into Markdown, split between Azure DevOps Wiki (technical docs) and SharePoint (everything else, onboarding etc). Built this because I needed to shift 500+ pages out of Confluence with no admin access, just an ordinary read login.
 
@@ -100,6 +101,7 @@ If an older version of a script ever did have real credentials typed into it and
 | `repair_garbled_text.ps1` | Fixes up `content.html`/`content.md` files already extracted with the old `.ps1` encoding bug (garbled accents/quotes/dashes, see Troubleshooting below). Only needed once, for content pulled before that fix landed. |
 | `repair_garbled_text.py` | Same repair, Python standard library only. |
 | `confluence_common.py` / `confluence_common.ps1` | Not something you run - the code every other script shares: asking questions (with `?` help), finding an export folder and what it came from, logging in and talking to Confluence (retries, batching through long lists, SSL settings), and reading Confluence's page HTML. Each script loads it from the same folder, so **keep all the files together** - one script copied out on its own won't run, and says so. A fix made here fixes every script at once. |
+| `tests/` | Automatic tests, not part of the pipeline: a fake Confluence (`mock_confluence.py`) with a made-up 34-page space (`test_site.json`), and `run_tests.py`, which runs every script against it in both languages and checks the results. See "Changing the scripts" below. |
 | `check_script_encoding.ps1` | Maintenance tool, not part of the pipeline: scans every `.ps1` file in the folder for the exact bug that broke `repair_garbled_text.ps1` in real use (see Troubleshooting below) - a missing UTF-8 BOM, or a literal special character sitting directly in code rather than built from a character code. Run it after editing any `.ps1` file here, before committing. |
 | `runningPythonScriptsInVSCode.md` | If Python in VS Code is giving you grief (PATH errors, nothing happening when you hit run), this walks through it. |
 | `settingUpPowerAutomate.md` | First-time walkthrough for trying Power Automate as a way past the Entra ID wall blocking real SharePoint page automation. See "If you want to automate the SharePoint side further" below. |
@@ -430,6 +432,16 @@ All of this uses the same read access you already have browsing Confluence norma
 ## Changing the scripts
 
 Every script comes in a Python and a PowerShell version that do the same thing - change one, change the other to match. Anything more than one script needs (asking a question, logging in, reading an export folder) lives in `confluence_common.py`/`.ps1` rather than being copied into each script, so look there first. After editing any `.ps1` file, run `.\check_script_encoding.ps1` before committing (see "When something goes wrong" for why).
+
+Then run the tests - no Confluence needed:
+
+```
+python tests/run_tests.py
+```
+
+It starts a fake Confluence on your machine and runs every script against it, start to finish, in Python and (if PowerShell 7 is installed) PowerShell: auth test, extractor, both checks, Markdown, SharePoint paste, table to CSV, repair and git setup. The fake one is deliberately awkward in the ways real servers were - it hands out results 10 at a time whatever you ask for, leaves the character set off its replies, has a download that fails, an "image" that's really a login page, and attachments with missing or wrong sizes - and every check says what it expected if it fails. Everything happens in a temporary folder and nothing is written into the repo. It takes a minute or two. The same tests run on GitHub for every push and pull request (the badge at the top shows the latest result).
+
+Found a new way a real Confluence misbehaves? Add it to `tests/test_site.json` (and `tests/mock_confluence.py` if it needs new behaviour) with a check in `run_tests.py`, so it stays fixed.
 
 ## Questions and problems
 
