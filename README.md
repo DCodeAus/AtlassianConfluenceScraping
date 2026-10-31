@@ -5,6 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/DCodeAus/AtlassianConfluenceScraping)](https://github.com/DCodeAus/AtlassianConfluenceScraping/releases)
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3%2C%20stdlib--only-3776AB?logo=python&logoColor=white)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 Pulls documentation out of a self-hosted Confluence instance and turns it into Markdown, split between Azure DevOps Wiki (technical docs) and SharePoint (everything else, onboarding etc). Built this because I needed to shift 500+ pages out of Confluence with no admin access, just an ordinary read login.
 
@@ -433,3 +434,7 @@ Every script comes in a Python and a PowerShell version that do the same thing -
 ## Questions and problems
 
 Something broken, or doesn't make sense? [Raise an issue](https://github.com/DCodeAus/AtlassianConfluenceScraping/issues) - say which script, which version (Python or PowerShell), and paste what it printed (with your site address and anything private taken out).
+
+## Licence
+
+MIT - free to use, change and share, including at work. See [LICENSE](LICENSE).
