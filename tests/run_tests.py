@@ -4,6 +4,7 @@ Automatic tests for every script here - stdlib only, no pip install.
     python tests/run_tests.py               # Python scripts, plus PowerShell if pwsh is installed
     python tests/run_tests.py --python      # just the Python scripts
     python tests/run_tests.py --powershell  # just the PowerShell scripts
+    python tests/run_tests.py --windows-powershell  # PowerShell scripts on Windows PowerShell 5.1
 
 Starts the fake Confluence in tests/mock_confluence.py, then runs every
 script against it, the same order you would for real: auth test,
@@ -41,6 +42,11 @@ TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(TESTS_DIR)
 EXPORT = "confluence_export_TEAM"
 
+# How the .ps1 scripts are run: PowerShell 7 by default, or with
+# --windows-powershell, the Windows PowerShell 5.1 built into Windows - the
+# version most people actually run these with, and the one with the quirks.
+POWERSHELL = ["pwsh", "-NoProfile"]
+
 failures = []
 
 
@@ -64,7 +70,7 @@ def read_json(path):
 
 
 def run_suite(language, work):
-    print(f"\n=== {'Python' if language == 'py' else 'PowerShell'} ===")
+    print(f"\n=== {'Python' if language == 'py' else ' '.join(POWERSHELL[:1])} ===")
     os.makedirs(work)
 
     # The site file is copied, so the anonymous test can change it without
@@ -104,7 +110,7 @@ def run_suite(language, work):
         if language == "py":
             command = [sys.executable, os.path.join(REPO_DIR, f"{script}.py"), *args]
         else:
-            command = ["pwsh", "-NoProfile", "-File", os.path.join(REPO_DIR, f"{script}.ps1"), *args]
+            command = [*POWERSHELL, "-File", os.path.join(REPO_DIR, f"{script}.ps1"), *args]
         result = subprocess.run(
             command, cwd=work, env={**env, **(extra_env or {})},
             input=answers + "\n" * 40, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600,
@@ -193,6 +199,82 @@ def run_suite(language, work):
                 rows = list(csv.reader(f))
         check("table to CSV pulls the table out", rows == [["Name", "Role"], ["Alice & Bob", "Owner"]], str(rows))
 
+        # Azure DevOps Wiki layout, on a copy so the destinations can be
+        # set for it without changing what the checks below see. The space
+        # home page (1001, with every awkward character in its title) comes
+        # to the wiki, so everything nests under it; 1011 goes to SharePoint,
+        # so its child 1012 should move up under 1007.
+        wiki_export = os.path.join(work, "wikicopy")
+        shutil.copytree(export, wiki_export)
+        wiki_pages = {"1001", "1002", "1005", "1006", "1007", "1008", "1009", "1010", "1012", "1013", "1034"}
+        destinations = os.path.join(wiki_export, "page_destinations.csv")
+        with open(destinations, encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.DictReader(f))
+        for row in rows:
+            row["destination"] = "azure" if row["id"] in wiki_pages else "sharepoint" if row["id"] == "1011" else "discard"
+        with open(destinations, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+        wiki_env = {"CONFLUENCE_EXPORT_DIR": "wikicopy", "CONFLUENCE_MARKDOWN_EXPORT_DIR": "mdwiki",
+                    "CONFLUENCE_WIKI_EXPORT_DIR": "wiki", "CONFLUENCE_WIKI_REPO_URL": ""}
+        run("confluence_html_to_markdown", extra_env=wiki_env)
+        output = run("confluence_to_azure_wiki", extra_env=wiki_env)
+        wiki = os.path.join(work, "wiki")
+        home = "Café-“Notes”-–-Q3%2DQ4%3A-plan%3F"
+
+        def wiki_file(*parts):
+            path = os.path.join(wiki, *parts)
+            if not os.path.isfile(path):
+                return None
+            with open(path, encoding="utf-8") as f:
+                return f.read()
+
+        built = [os.path.relpath(os.path.join(root, name), wiki).replace(os.sep, "/")
+                 for root, _, names in os.walk(wiki) for name in names if name.endswith(".md")]
+        check("wiki: one file per page, named after the page", len(built) == len(wiki_pages) and not any(p.endswith("content.md") for p in built), str(sorted(built)))
+        check("wiki: hyphens, colons, slashes and ? in a title encoded the wiki's way", wiki_file(home + ".md") is not None, str(sorted(built)))
+        check("wiki: a real hyphen in a title is kept apart from the spaces", wiki_file(home, "Deploy-%2D-step-1.md") is not None)
+        check("wiki: sub-pages sit in a folder named after their parent", wiki_file(home, "Page-7", "Page-8", "Page-9.md") is not None)
+        check("wiki: a page whose parent went to SharePoint moves up to the next one",
+              wiki_file(home, "Page-7", "Page-12.md") is not None)
+        check("wiki: top-level .order lists the top page", wiki_file(".order") == home + "\n", repr(wiki_file(".order")))
+        check("wiki: each folder's .order keeps the Confluence order",
+              wiki_file(home, "Page-7", ".order") == "Page-8\nPage-10\nPage-12\n", repr(wiki_file(home, "Page-7", ".order")))
+        page7 = wiki_file(home, "Page-7.md") or ""
+        check("wiki: the converter's '# title' line isn't repeated", not page7.startswith("# Page 7"), page7[:60])
+        links = wiki_file(home, "Macros-and-links.md") or ""
+        check("wiki: a link to a page in the wiki becomes a wiki link", f"[Page 7](</{home}/Page-7>)" in links, links[:400])
+        check("wiki: a link into another space isn't linked to a page here",
+              "[Shared & Common](" not in links and "Shared & Common" in links, links[:400])
+        report_rows = []
+        if os.path.isfile(os.path.join(wiki_export, "wiki_link_report.csv")):
+            with open(os.path.join(wiki_export, "wiki_link_report.csv"), encoding="utf-8-sig", newline="") as f:
+                report_rows = list(csv.DictReader(f))
+        reasons = {row["links_to"]: row["reason"] for row in report_rows}
+        check("wiki: links that can't be wiki links are listed with why",
+              "another space" in reasons.get("Shared & Common", "") and "not in this export" in reasons.get("Deleted long ago", ""), str(reasons))
+        attachments = sorted(os.listdir(os.path.join(wiki, ".attachments"))) if os.path.isdir(os.path.join(wiki, ".attachments")) else []
+        attached = wiki_file(home, "Two-attachments.md") or ""
+        check("wiki: attachments copied to .attachments with the page id in front",
+              "1002-a.pdf" in attachments and "](</.attachments/1002-a.pdf>)" in attached, f"{attachments} / {attached[:200]}")
+        borrowed = wiki_file(home, "Borrows-images.md") or ""
+        check("wiki: an image borrowed from another page comes from that page's attachments",
+              "](</.attachments/1001-diagram.png>)" in borrowed and "1001-diagram.png" in attachments, borrowed[:300])
+        check("wiki: images that were never saved are reported, not lost",
+              "Borrows images: ghost.png" in output and "](<images/ghost.png>)" in borrowed, output[-600:])
+        check("wiki: the build never includes a git repo", not os.path.isdir(os.path.join(wiki, ".git")))
+
+        output = run("confluence_to_azure_wiki", extra_env=wiki_env)
+        check("wiki: running it again rebuilds the folder", "Cleared the previous build" in output and wiki_file(home + ".md") is not None, output[-300:])
+        clone = os.path.join(work, "wikiclone")
+        os.makedirs(os.path.join(clone, ".git"))
+        with open(os.path.join(clone, "Existing-page.md"), "w") as f:
+            f.write("keep me")
+        output = run("confluence_to_azure_wiki", extra_env={**wiki_env, "CONFLUENCE_WIKI_EXPORT_DIR": "wikiclone"})
+        check("wiki: refuses to build straight into a git repo (the wiki clone)",
+              os.path.isfile(os.path.join(clone, "Existing-page.md")) and "is a git repo" in output, output[-300:])
+
         shutil.copytree(export, os.path.join(work, "repaircopy"))
         output = run("repair_garbled_text", "repaircopy")
         check("repair script finds nothing to fix in a clean export", "Fixed 0 of" in output, output[-200:])
@@ -218,7 +300,7 @@ def run_suite(language, work):
         os.makedirs(alone)
         extension = "py" if language == "py" else "ps1"
         shutil.copy(os.path.join(REPO_DIR, f"confluence_extractor.{extension}"), alone)
-        command = [sys.executable, "-I", "confluence_extractor.py"] if language == "py" else ["pwsh", "-NoProfile", "-File", "confluence_extractor.ps1"]
+        command = [sys.executable, "-I", "confluence_extractor.py"] if language == "py" else [*POWERSHELL, "-File", "confluence_extractor.ps1"]
         result = subprocess.run(command, cwd=alone, env=env, input="", capture_output=True, text=True, timeout=60)
         check("a script on its own says confluence_common is missing",
               result.returncode == 1 and "confluence_common" in result.stdout, (result.stdout + result.stderr)[:200])
@@ -228,12 +310,19 @@ def run_suite(language, work):
 
 
 def main():
+    global POWERSHELL
     args = sys.argv[1:]
+    if "--windows-powershell" in args:
+        if not shutil.which("powershell"):
+            print("Windows PowerShell (powershell.exe) isn't here - this option is for Windows.")
+            sys.exit(1)
+        POWERSHELL = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
+        args = args + ["--powershell"]
     languages = []
     if "--powershell" not in args:
         languages.append("py")
     if "--python" not in args:
-        if shutil.which("pwsh"):
+        if shutil.which(POWERSHELL[0]):
             languages.append("ps")
         elif "--powershell" in args:
             print("PowerShell 7 (pwsh) isn't installed, so the PowerShell scripts can't be tested here.")

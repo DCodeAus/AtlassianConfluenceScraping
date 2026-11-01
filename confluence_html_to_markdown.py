@@ -158,11 +158,17 @@ def convert_element_to_markdown(elem, list_depth):
 
         # Page link: no stable URL until the target's actually migrated,
         # so keep the text and flag it instead of dropping it (used to
-        # fall through to unknown-tag and vanish).
+        # fall through to unknown-tag and vanish). The text is wrapped
+        # between a start and an end comment, so confluence_to_azure_wiki
+        # can turn it into a real wiki link later - the space key is kept
+        # too, so a link into another space isn't mistaken for a page here
+        # with the same title.
         target_title = get_attr(page_ref, "content-title") if page_ref is not None else None
+        target_space = get_attr(page_ref, "space-key") if page_ref is not None else None
         display_text = link_text or target_title or "link"
         if target_title:
-            return f"{display_text} <!-- internal Confluence link, unresolved: \"{target_title}\" -->"
+            space_note = f" (space {target_space})" if target_space else ""
+            return f"<!-- internal Confluence link to \"{target_title}\"{space_note} -->{display_text}<!-- end of internal link -->"
         return f"{display_text} <!-- internal Confluence link, unresolved -->"
 
     if tag == "emoticon":
