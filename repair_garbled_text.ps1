@@ -127,6 +127,35 @@ function Split-EncodableRuns {
     return , $runs
 }
 
+function Get-Utf8SequenceLength {
+    # How many bytes make up the valid UTF-8 character starting at $Pos -
+    # 1 to 4 - or 0 if what starts there isn't valid UTF-8. These are
+    # UTF-8's own rules: the first byte says how many follow, each of
+    # those must be a "continuation" byte (0x80-0xBF), and a few first
+    # bytes narrow the range of the next one (to rule out overlong forms,
+    # UTF-16 surrogates and anything past U+10FFFF).
+    param([byte[]]$Bytes, [int]$Pos)
+    $first = $Bytes[$Pos]
+    if ($first -lt 0x80) { return 1 }
+    if ($first -ge 0xC2 -and $first -le 0xDF) { $count = 1; $low = 0x80; $high = 0xBF }
+    elseif ($first -eq 0xE0) { $count = 2; $low = 0xA0; $high = 0xBF }
+    elseif ($first -eq 0xED) { $count = 2; $low = 0x80; $high = 0x9F }
+    elseif ($first -ge 0xE1 -and $first -le 0xEF) { $count = 2; $low = 0x80; $high = 0xBF }
+    elseif ($first -eq 0xF0) { $count = 3; $low = 0x90; $high = 0xBF }
+    elseif ($first -ge 0xF1 -and $first -le 0xF3) { $count = 3; $low = 0x80; $high = 0xBF }
+    elseif ($first -eq 0xF4) { $count = 3; $low = 0x80; $high = 0x8F }
+    else { return 0 }
+    # Cut off by the end of the bytes before the character is complete.
+    if ($Pos + $count -ge $Bytes.Length) { return 0 }
+    # The second byte has the narrowed range; any after it are plain
+    # continuation bytes.
+    if ($Bytes[$Pos + 1] -lt $low -or $Bytes[$Pos + 1] -gt $high) { return 0 }
+    for ($i = 2; $i -le $count; $i++) {
+        if ($Bytes[$Pos + $i] -lt 0x80 -or $Bytes[$Pos + $i] -gt 0xBF) { return 0 }
+    }
+    return $count + 1
+}
+
 function ConvertFrom-Cp1252BytesPartial {
     # Decodes bytes as UTF-8, but a single byte sequence that doesn't form
     # a valid character (one genuinely unrecoverable spot, like a
@@ -147,22 +176,34 @@ function ConvertFrom-Cp1252BytesPartial {
             $pos = $Bytes.Length
         }
         catch [System.Text.DecoderFallbackException] {
-            # Decoding failed partway through. .Index says how many
-            # bytes it got through first (counting from $pos, not from
-            # the start of $Bytes). .BytesUnknown is the exact bad
-            # byte(s) it choked on.
-            #
-            # Keep the part before the bad byte(s) (now correctly
-            # decoded), keep the bad byte(s) exactly as they were (their
-            # original Windows-1252 character, not a guess), then go
-            # round the loop again starting right after them.
-            if ($_.Exception.Index -gt 0) {
-                [void]$result.Append($strictUtf8.GetChars($Bytes, $pos, $_.Exception.Index))
+            # Decoding failed partway through. Find the first bad byte
+            # ourselves rather than trusting the exception's .Index: on
+            # Windows PowerShell 5.1 (.NET Framework) that number isn't
+            # counted from $pos the way it is on PowerShell 7, so using it
+            # left $pos stuck and this loop never finished.
+            $badStart = $pos
+            while ($badStart -lt $Bytes.Length) {
+                $length = Get-Utf8SequenceLength -Bytes $Bytes -Pos $badStart
+                if ($length -eq 0) { break }
+                $badStart += $length
             }
-            $badStart = $pos + $_.Exception.Index
-            $badLength = $_.Exception.BytesUnknown.Length
-            [void]$result.Append($windows1252.GetChars($Bytes, $badStart, $badLength))
-            $pos = $badStart + $badLength
+            # Keep the part before the bad byte (now correctly decoded),
+            # keep the bad byte exactly as it was (its original
+            # Windows-1252 character, not a guess), then go round the
+            # loop again starting right after it. One byte at a time
+            # gives the same text as handing over a longer bad sequence,
+            # since Windows-1252 turns each byte into one character
+            # either way - and it always moves forward, so it can't hang.
+            if ($badStart -gt $pos) {
+                [void]$result.Append($strictUtf8.GetChars($Bytes, $pos, $badStart - $pos))
+            }
+            if ($badStart -ge $Bytes.Length) {
+                # Shouldn't happen (the decoder said something was bad),
+                # but never risk looping forever.
+                break
+            }
+            [void]$result.Append($windows1252.GetChars($Bytes, $badStart, 1))
+            $pos = $badStart + 1
         }
     }
     return $result.ToString()

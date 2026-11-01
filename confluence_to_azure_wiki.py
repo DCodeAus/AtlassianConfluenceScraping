@@ -20,17 +20,52 @@ the whole job rather than the start of a clean-up:
   - page names that break the wiki's rules (/ \\ #, a hyphen or colon in
     the title, too long a path) fixed up the way the wiki itself does
 
-Pure local file processing - doesn't touch Confluence or Azure DevOps.
-Builds into a fresh folder, never into your wiki repo directly, and never
-pushes anything: copying the result in and pushing is left to you.
+Pure local file processing - doesn't touch Confluence or Azure DevOps,
+and needs no login. Builds into a fresh folder, never into your wiki repo
+directly, and never pushes anything: copying the result in and pushing
+is left to you.
+
+BEFORE YOU RUN THIS - three steps, in this order:
+  1. confluence_extractor has pulled the space down (you have a
+     confluence_export... folder with a manifest.json in it).
+  2. You've filled in page_destinations.csv in that folder - "azure" for
+     every page that belongs in the wiki.
+  3. You've run confluence_html_to_markdown AFTER filling the CSV in, so
+     its azure/ folder has those pages in it. (Changed the CSV since?
+     Run the converter again first - this only sees what it last wrote.)
+
+HOW TO RUN IT - from the folder that holds your export folder:
 
     python confluence_to_azure_wiki.py
     python confluence_to_azure_wiki.py C:\\path\\to\\confluence_export_TEAM
 
-Asks for the export folder, the Markdown folder and where to build the
-wiki. Set CONFLUENCE_EXPORT_DIR, CONFLUENCE_MARKDOWN_EXPORT_DIR,
-CONFLUENCE_WIKI_EXPORT_DIR and CONFLUENCE_WIKI_REPO_URL to skip the
-questions.
+IT ASKS FOUR THINGS - press Enter to accept the suggested answer, or type
+a bare ? and Enter at any of them for an explanation:
+  1. The export folder (skipped if you gave it on the command line).
+  2. The Markdown folder the converter wrote to.
+  3. A NEW folder to build the wiki in - not your wiki clone.
+  4. The wiki repo's URL - optional, only used to check page paths fit
+     the wiki's 235-character limit.
+For unattended runs, set CONFLUENCE_EXPORT_DIR,
+CONFLUENCE_MARKDOWN_EXPORT_DIR, CONFLUENCE_WIKI_EXPORT_DIR and
+CONFLUENCE_WIKI_REPO_URL instead.
+
+WHAT YOU GET - for a space whose "Operations" page has two sub-pages:
+
+    confluence_azure_wiki_TEAM/
+        .order                    lists the top-level pages, in order
+        Operations.md             the page itself
+        Operations/               its sub-pages
+            .order
+            How-to-deploy.md
+            On%2Dcall-rota.md     "On-call rota" - see to_wiki_page_name below
+        .attachments/
+            1234-diagram.png      every image, named after its page's id
+
+plus wiki_link_report.csv in the export folder, listing any links it
+couldn't turn into wiki links and why. When it finishes it prints what
+it did and the exact steps to get it into the wiki (copy into a clone of
+the wiki repo, then git add / commit / push).
 
 Something broken or unclear? Raise an issue at
 https://github.com/DCodeAus/AtlassianConfluenceScraping/issues
@@ -76,7 +111,10 @@ WIKI_ENCODED_CHARACTERS = [
 OUTPUT_MARKER = ".confluence_to_azure_wiki"
 
 # The converter wraps each link to another page between these two comments
-# (see confluence_html_to_markdown) - start, link text, end.
+# (see confluence_html_to_markdown) - start, link text, end. For example:
+#   <!-- internal Confluence link to "Deploy" -->see here<!-- end of internal link -->
+# becomes, if "Deploy" is coming to the wiki under "Operations":
+#   [see here](</Operations/Deploy>)
 PAGE_LINK_PATTERN = re.compile(
     r'<!-- internal Confluence link to "(?P<title>.*?)"(?: \(space (?P<space>[^)]*)\))? -->'
     r"(?P<text>.*?)<!-- end of internal link -->",
@@ -85,6 +123,9 @@ PAGE_LINK_PATTERN = re.compile(
 # Older converter output had no start marker, so there's no telling where
 # the link text began - these can only be counted and pointed out.
 OLD_PAGE_LINK_PATTERN = re.compile(r"<!-- internal Confluence link, unresolved")
+# The converter points every image/attachment at the page's own images
+# folder, e.g. ![diagram.png](<images/diagram.png>) - the wiki keeps them
+# all in one .attachments folder instead, so these get repointed there.
 IMAGE_LINK_PATTERN = re.compile(r"\]\(<images/(?P<name>[^>]*)>\)")
 
 
@@ -251,6 +292,10 @@ def main():
     renamed = []
     prefix_length = len(repo_url) + 1 if repo_url else 0
 
+    # Works out every page's file name and folder, starting from the
+    # top-level pages and working down - a page's folder is named after
+    # its parent, so the parent's name has to be settled first. Calls
+    # itself for each page's own sub-pages.
     def place(parent_id, parent_path):
         used = set()
         for page in children.get(parent_id, []):
@@ -259,6 +304,8 @@ def main():
             # Windows can't hold two files differing only by case.
             if name.lower() in used:
                 name = f"{name}-{page['id']}"
+            # Too long once the repo URL and parent folders are counted?
+            # Trim this page's own name (see trim_page_name).
             folder = "/".join(parent_path)
             full_length = prefix_length + (len(folder) + 1 if folder else 0) + len(name) + len(".md")
             if full_length > AZURE_MAX_PATH_LENGTH:
@@ -285,9 +332,14 @@ def main():
                 attachment_owners.setdefault(entry["filename"], []).append((page["id"], saved))
 
     # --- Build it ---
+    # Everything above only worked out where things go - nothing's been
+    # written yet. From here on, each page is read from the converter's
+    # azure/ folder, its images and links are fixed up, and it's written
+    # to its place in the new folder.
     prepare_output_dir(output_dir)
     attachments_dir = os.path.join(output_dir, ".attachments")
 
+    # Kept for the summary printed at the end.
     link_report = []  # rows for wiki_link_report.csv
     missing_images = []
     not_converted = []

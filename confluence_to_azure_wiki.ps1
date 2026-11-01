@@ -20,17 +20,53 @@ the whole job rather than the start of a clean-up:
   - page names that break the wiki's rules (/ \ #, a hyphen or colon in
     the title, too long a path) fixed up the way the wiki itself does
 
-Pure local file processing - doesn't touch Confluence or Azure DevOps.
-Builds into a fresh folder, never into your wiki repo directly, and never
-pushes anything: copying the result in and pushing is left to you.
+Pure local file processing - doesn't touch Confluence or Azure DevOps,
+and needs no login. Builds into a fresh folder, never into your wiki repo
+directly, and never pushes anything: copying the result in and pushing
+is left to you.
+
+BEFORE YOU RUN THIS - three steps, in this order:
+  1. confluence_extractor has pulled the space down (you have a
+     confluence_export... folder with a manifest.json in it).
+  2. You've filled in page_destinations.csv in that folder - "azure" for
+     every page that belongs in the wiki.
+  3. You've run confluence_html_to_markdown AFTER filling the CSV in, so
+     its azure\ folder has those pages in it. (Changed the CSV since?
+     Run the converter again first - this only sees what it last wrote.)
+
+HOW TO RUN IT - in PowerShell, from the folder that holds your export
+folder:
 
     .\confluence_to_azure_wiki.ps1
     .\confluence_to_azure_wiki.ps1 -ExportDir "S:\Exports\confluence_export_TEAM"
 
-Asks for the export folder, the Markdown folder and where to build the
-wiki. Set CONFLUENCE_EXPORT_DIR, CONFLUENCE_MARKDOWN_EXPORT_DIR,
-CONFLUENCE_WIKI_EXPORT_DIR and CONFLUENCE_WIKI_REPO_URL to skip the
-questions.
+IT ASKS FOUR THINGS - press Enter to accept the suggested answer, or type
+a bare ? and Enter at any of them for an explanation:
+  1. The export folder (skipped if you gave it with -ExportDir).
+  2. The Markdown folder the converter wrote to.
+  3. A NEW folder to build the wiki in - not your wiki clone.
+  4. The wiki repo's URL - optional, only used to check page paths fit
+     the wiki's 235-character limit.
+For unattended runs, set CONFLUENCE_EXPORT_DIR,
+CONFLUENCE_MARKDOWN_EXPORT_DIR, CONFLUENCE_WIKI_EXPORT_DIR and
+CONFLUENCE_WIKI_REPO_URL instead.
+
+WHAT YOU GET - for a space whose "Operations" page has two sub-pages:
+
+    confluence_azure_wiki_TEAM\
+        .order                    lists the top-level pages, in order
+        Operations.md             the page itself
+        Operations\               its sub-pages
+            .order
+            How-to-deploy.md
+            On%2Dcall-rota.md     "On-call rota" - see ConvertTo-WikiPageName below
+        .attachments\
+            1234-diagram.png      every image, named after its page's id
+
+plus wiki_link_report.csv in the export folder, listing any links it
+couldn't turn into wiki links and why. When it finishes it prints what
+it did and the exact steps to get it into the wiki (copy into a clone of
+the wiki repo, then git add / commit / push).
 
 Something broken or unclear? Raise an issue at
 https://github.com/DCodeAus/AtlassianConfluenceScraping/issues
@@ -73,11 +109,17 @@ $OutputMarker = ".confluence_to_azure_wiki"
 
 # The converter wraps each link to another page between these two comments
 # (see confluence_html_to_markdown) - start, link text, end. (?s) lets the
-# link text run over more than one line.
+# link text run over more than one line. For example:
+#   <!-- internal Confluence link to "Deploy" -->see here<!-- end of internal link -->
+# becomes, if "Deploy" is coming to the wiki under "Operations":
+#   [see here](</Operations/Deploy>)
 $PageLinkPattern = '(?s)<!-- internal Confluence link to "(?<title>.*?)"(?: \(space (?<space>[^)]*)\))? -->(?<text>.*?)<!-- end of internal link -->'
 # Older converter output had no start marker, so there's no telling where
 # the link text began - these can only be counted and pointed out.
 $OldPageLinkPattern = '<!-- internal Confluence link, unresolved'
+# The converter points every image/attachment at the page's own images
+# folder, e.g. ![diagram.png](<images/diagram.png>) - the wiki keeps them
+# all in one .attachments folder instead, so these get repointed there.
 $ImageLinkPattern = '\]\(<images/(?<name>[^>]*)>\)'
 
 function ConvertTo-WikiPageName {
@@ -229,6 +271,10 @@ $renamed = New-Object System.Collections.ArrayList
 $prefixLength = if ($repoUrl) { $repoUrl.Length + 1 } else { 0 }
 
 function Set-PagePlaces {
+    # Works out every page's file name and folder, starting from the
+    # top-level pages and working down - a page's folder is named after
+    # its parent, so the parent's name has to be settled first. Calls
+    # itself for each page's own sub-pages.
     param([string]$ParentId, [string[]]$ParentPath)
     # Unique within its folder - PowerShell's @{} ignores case, which is
     # what's wanted, since Windows can't hold two files differing only by case.
@@ -238,6 +284,8 @@ function Set-PagePlaces {
         $pageId = [string]$page.id
         $name = ConvertTo-WikiPageName -Title $page.title -PageId $pageId
         if ($used.ContainsKey($name)) { $name = "$name-$pageId" }
+        # Too long once the repo URL and parent folders are counted? Trim
+        # this page's own name (see Get-TrimmedPageName).
         $folder = $ParentPath -join "/"
         $fullLength = $prefixLength + $(if ($folder) { $folder.Length + 1 } else { 0 }) + $name.Length + ".md".Length
         if ($fullLength -gt $AzureMaxPathLength) {
@@ -275,7 +323,12 @@ foreach ($page in $manifest) {
 }
 
 # --- Build it ---
-# Clears out a previous run's output so pages renamed or moved since don't
+# Everything above only worked out where things go - nothing's been written
+# yet. From here on, each page is read from the converter's azure\ folder,
+# its images and links are fixed up, and it's written to its place in the
+# new folder.
+#
+# First, the folder itself. Clears out a previous run's output so pages renamed or moved since don't
 # linger - but only a folder this script made. Refuses a git repo outright,
 # in case it's pointed at the wiki clone itself.
 if (Test-Path -LiteralPath (Join-Path $outputDir ".git")) {
@@ -301,6 +354,9 @@ $outputDir = (Resolve-Path -LiteralPath $outputDir).Path
 Set-Utf8NoBomContent -Path (Join-Path $outputDir $OutputMarker) -Value "Built by confluence_to_azure_wiki - safe for it to clear and rebuild.`nDon't copy this file into your wiki repo.`n"
 $attachmentsDir = Join-Path $outputDir ".attachments"
 
+# Kept for the summary printed at the end. $script: because the two
+# fix-up blocks below (images, links) run as separate little scripts that
+# need to add to these.
 $script:linkReport = New-Object System.Collections.ArrayList
 $script:missingImages = New-Object System.Collections.ArrayList
 $notConverted = New-Object System.Collections.ArrayList
