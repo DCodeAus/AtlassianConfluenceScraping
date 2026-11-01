@@ -340,13 +340,20 @@ function Convert-NodeToMarkdown {
                     # Page link: no stable URL until the target's actually
                     # migrated, so keep the text and flag it instead of
                     # dropping it (used to fall through to the "default"
-                    # case and vanish with no trace).
+                    # case and vanish with no trace). The text is wrapped
+                    # between a start and an end comment, so
+                    # confluence_to_azure_wiki can turn it into a real wiki
+                    # link later - the space key is kept too, so a link
+                    # into another space isn't mistaken for a page here
+                    # with the same title.
                     $targetTitleAttribute = if ($pageRef) { $pageRef.Attributes() | Where-Object { $_.Name.LocalName -eq "content-title" } | Select-Object -First 1 } else { $null }
                     $targetTitle = if ($targetTitleAttribute) { $targetTitleAttribute.Value } else { $null }
+                    $targetSpaceAttribute = if ($pageRef) { $pageRef.Attributes() | Where-Object { $_.Name.LocalName -eq "space-key" } | Select-Object -First 1 } else { $null }
+                    $spaceNote = if ($targetSpaceAttribute) { " (space $($targetSpaceAttribute.Value))" } else { "" }
                     $displayText = if ($linkText) { $linkText } elseif ($targetTitle) { $targetTitle } else { "link" }
 
                     if ($targetTitle) {
-                        [void]$stringBuilder.Append("$displayText <!-- internal Confluence link, unresolved: `"$targetTitle`" -->")
+                        [void]$stringBuilder.Append("<!-- internal Confluence link to `"$targetTitle`"$spaceNote -->$displayText<!-- end of internal link -->")
                     } else {
                         [void]$stringBuilder.Append("$displayText <!-- internal Confluence link, unresolved -->")
                     }

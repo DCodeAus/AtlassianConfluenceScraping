@@ -23,7 +23,8 @@ flowchart TD
     G --> J[Length/naming check<br/>Azure: 235 chars]
     H --> K[Length/naming check<br/>SharePoint: 400 chars]
 
-    J --> L[git push into Azure DevOps Wiki repo]
+    J --> W[confluence_to_azure_wiki.py/.ps1<br/>page tree, .order, .attachments, real links]
+    W --> L[git push into Azure DevOps Wiki repo]
 
     C --> N[confluence_sharepoint_paste.py/.ps1<br/>converts HTML to paste-ready HTML]
     E --> N
@@ -45,8 +46,9 @@ flowchart TD
 2. **Already got a `confluence_export` folder from before, with garbled characters in it (`Â`, `â€™`)?** Run `repair_garbled_text` on it now - see that entry in [What's in here](README.md#whats-in-here). First time ever running this? Skip straight to step 3, nothing to repair yet.
 3. **Pull everything down** - [Pulling everything down](README.md#pulling-everything-down)
 4. **Classify pages, then convert to Markdown** - [Turning it into Markdown](README.md#turning-it-into-markdown)
-5. **Get pages into SharePoint** - [Getting pages into SharePoint](README.md#getting-pages-into-sharepoint)
-6. **A page that's really just a table?** - [Pages that are really just a table](README.md#pages-that-are-really-just-a-table) - better off as a SharePoint List
+5. **Get pages into Azure DevOps Wiki** - [Getting pages into Azure DevOps Wiki](README.md#getting-pages-into-azure-devops-wiki)
+6. **Get pages into SharePoint** - [Getting pages into SharePoint](README.md#getting-pages-into-sharepoint)
+7. **A page that's really just a table?** - [Pages that are really just a table](README.md#pages-that-are-really-just-a-table) - better off as a SharePoint List
 
 For the full walkthrough with actual commands in order, see [Getting started - which script, in what order](README.md#getting-started---which-script-in-what-order) in the README.
 

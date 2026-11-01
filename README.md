@@ -48,9 +48,10 @@ Just want the commands, in order, no explanation? Here they are - run each from 
 .\confluence_html_to_markdown.ps1
 
 # 5. Get each page where it's going:
-#    - "azure" pages: git push confluence_markdown_export\azure\ into your
-#      wiki repo - see "Getting pages into Azure DevOps Wiki" below if
-#      you've never used git.
+#    - "azure" pages: lay them out the way the wiki expects, then copy the
+#      result into your wiki clone and push - see "Getting pages into
+#      Azure DevOps Wiki" below if you've never used git:
+.\confluence_to_azure_wiki.ps1
 #    - "sharepoint" pages, turn them into paste-ready HTML:
 .\confluence_sharepoint_paste.ps1
 #    - a page that's really just a table (an on-call roster, say):
@@ -94,6 +95,8 @@ If an older version of a script ever did have real credentials typed into it and
 | `confluence_export_to_git.ps1` | Same thing, PowerShell version. |
 | `confluence_html_to_markdown.ps1` | Takes everything the extractor pulled and turns it into proper Markdown, images and all. Routes each page to Azure or SharePoint based on how you've classified it in a CSV, with a built-in check for each platform's file name limits. |
 | `confluence_html_to_markdown.py` | Same conversion and routing, Python standard library only. Use this one if you don't have PowerShell (e.g. extracted on Mac/Linux). |
+| `confluence_to_azure_wiki.ps1` | Lays the pages classified "azure" out the way an Azure DevOps Wiki repo expects - one file per page named after it, sub-pages in folders, `.order` files, images in `.attachments`, links between pages turned into real wiki links. See "Getting pages into Azure DevOps Wiki" below. |
+| `confluence_to_azure_wiki.py` | Same thing, Python standard library only. |
 | `confluence_sharepoint_paste.ps1` | Turns each page classified "sharepoint" into a standalone .html file ready to copy-paste into a new SharePoint page. See "Getting pages into SharePoint" below. |
 | `confluence_sharepoint_paste.py` | Same thing, Python standard library only. |
 | `confluence_table_to_csv.ps1` | Pulls one table off one page (an on-call register, say) and writes it as a CSV - better off as a real SharePoint List than a wiki page, and SharePoint can create a List straight from a CSV itself, no upload script needed. |
@@ -250,7 +253,7 @@ Each page's images are copied alongside its `content.md`. Your original `conflue
 
 **Adding more pages later?** Re-run the extractor, then re-run this script, it'll add any new pages to the CSV with a blank destination without touching rows you've already filled in, then stop so you can classify just the new ones.
 
-If it hits a Confluence macro it doesn't recognise (a page tree, a Jira embed, something obscure), it doesn't just drop the content, it keeps whatever text was visible and flags the spot with a comment (`<!-- unrecognised macro: ... -->`) so you can go back and check it manually. Links to other Confluence pages get the same treatment, since there's no way to know the page's new URL until it's actually been migrated: the link text is kept, tagged with `<!-- internal Confluence link, unresolved: "..." -->`, so you can find and fix these up once everything's landed in its new home.
+If it hits a Confluence macro it doesn't recognise (a page tree, a Jira embed, something obscure), it doesn't just drop the content, it keeps whatever text was visible and flags the spot with a comment (`<!-- unrecognised macro: ... -->`) so you can go back and check it manually. Links to other Confluence pages get the same treatment, since there's no way to know the page's new URL until it's actually been migrated: the link text is kept, wrapped in `<!-- internal Confluence link to "..." -->` and `<!-- end of internal link -->`, so you can find these, and `confluence_to_azure_wiki` turns the ones between wiki pages into real links for you. (Markdown converted before this change has the older `<!-- internal Confluence link, unresolved: "..." -->` instead - re-run the conversion to get the new form.)
 
 A few other Confluence-specific things get carried across properly rather than falling into that generic "unrecognised" bucket:
 
@@ -268,7 +271,25 @@ Pages still sitting in `unsorted` don't go through this check at all, sort them 
 
 ## Getting pages into Azure DevOps Wiki
 
-An Azure DevOps Wiki is a git repository behind the scenes - "pushing" a folder into it just means copying your files into a local copy of that repo and telling git to send them up. If you've never used git before, here's the actual steps, not just "git push it":
+An Azure DevOps Wiki is a git repository behind the scenes, with its own rules about how pages are laid out in it: each page is a file named after the page (`How-to-deploy.md`), sub-pages go in a folder named after their parent, a `.order` file in each folder sets the order pages appear in, and images live in one `.attachments` folder. The converter's `azure/` folder isn't laid out like that - every page is a `content.md`, which the wiki would show as a page called "content" - so first run:
+
+```
+.\confluence_to_azure_wiki.ps1
+```
+or
+```
+python confluence_to_azure_wiki.py
+```
+
+It asks for the export folder, the Markdown folder, a new folder to build the wiki in (`confluence_azure_wiki_...` by default), and optionally the wiki repo's URL for the 235-character path check. Then it builds:
+
+- **One file per page, in the Confluence page tree.** A page whose parent went to SharePoint (or was discarded) moves up to its nearest parent that's coming to the wiki, or to the top level.
+- **Names the wiki's way.** A hyphen in a file name means a space, so a real hyphen in a title is stored as `%2D`; `: < > * ? | "` are encoded the same way; `/ \ #` can't appear at all. A path still too long is trimmed, with the page id added so it stays unique.
+- **`.order` files**, so pages keep Confluence's order instead of going alphabetical.
+- **`.attachments`**, with every image and attachment link pointing at it. An image a page borrows from another page is found there too, as long as exactly one page in the export has a file by that name.
+- **Real links between pages.** A link to a page that isn't coming to the wiki (SharePoint, another space, deleted) is left flagged, and listed with the reason in `wiki_link_report.csv` in the export folder.
+
+It never writes into your wiki clone (it refuses a folder that's a git repo) and never pushes anything. Re-running it rebuilds its folder from scratch. Then, to get it into the wiki - if you've never used git before, here's the actual steps, not just "git push it":
 
 1. **Get Git itself, if it's not already on your machine.** Download it from [git-scm.com](https://git-scm.com/downloads) and install it - default options are fine, no admin rights needed for the per-user install.
 2. **Get the wiki's repo address.** In Azure DevOps, open your project's Wiki, click **Clone Wiki** (or **Clone repository** if you're pointed at the underlying repo directly), and copy the URL it gives you (ends in `.wiki` or `.git`).
@@ -277,7 +298,7 @@ An Azure DevOps Wiki is a git repository behind the scenes - "pushing" a folder 
    git clone <the URL you copied>
    ```
    This creates a new folder containing everything currently in the wiki.
-4. **Copy your converted pages in.** Copy everything from inside `confluence_markdown_export/azure/` into that cloned folder (merging with whatever's already there).
+4. **Copy your pages in.** Copy everything from inside the folder `confluence_to_azure_wiki` built into that cloned folder - the `.order` files and `.attachments` folder too - except the `.confluence_to_azure_wiki` marker file. If the wiki already has pages, merge the top-level `.order` by hand (keep its lines, add the new ones) rather than replacing it.
 5. **Send it up.** Back in the terminal, inside that cloned folder, run:
    ```
    git add .
@@ -380,7 +401,7 @@ New to this? Here's the order to actually run things in, start to finish. Everyt
    The first time, this just generates `page_destinations.csv` and stops - open that in Excel, mark each row `azure` or `sharepoint`, save, then run the script again to actually convert everything. See "Turning it into Markdown" above for the full detail.
 
 6. **Get each page into its actual destination:**
-   - Classified `azure` → `git push` the `confluence_markdown_export/azure/` folder into your Azure DevOps Wiki repo. See "Getting pages into Azure DevOps Wiki" above if you've never used git before.
+   - Classified `azure` → run `.\confluence_to_azure_wiki.ps1`, then copy what it builds into your Azure DevOps Wiki clone and push. See "Getting pages into Azure DevOps Wiki" above, including if you've never used git before.
    - Classified `sharepoint` → run `.\confluence_sharepoint_paste.ps1`, then copy-paste each resulting page into a new SharePoint page by hand. See "Getting pages into SharePoint" above.
    - A page that's really just a table (an on-call roster, say)? Run `.\confluence_table_to_csv.ps1 "Page Title"` instead, and create it as a SharePoint List from the CSV. See "Pages that are really just a table" above.
 
@@ -422,7 +443,7 @@ Hit the encoding bug below in the wild once - [whatHappenedEncodingBugPostmortem
 - [x] Confirming access actually works
 - [x] Pulling every page down, content and images
 - [x] Converting it all to Markdown, split by destination via the classification CSV, with the Azure/SharePoint length check
-- [x] Azure DevOps Wiki: just `git push` the `azure/` output, it's a git repo
+- [x] Azure DevOps Wiki: `confluence_to_azure_wiki` lays the `azure/` pages out the way the wiki repo expects (page tree, `.order`, `.attachments`, real links between pages), then it's a `git push`
 - [ ] SharePoint: no admin access to automate via Graph API yet, so `confluence_sharepoint_paste` generates paste-ready HTML but page creation itself is still a manual copy-paste per page - Power Automate is the next thing to try, see "If you want to automate the SharePoint side further" above, but that's untested against a real tenant so far
 
 ## One more thing
@@ -439,7 +460,7 @@ Then run the tests - no Confluence needed:
 python tests/run_tests.py
 ```
 
-It starts a fake Confluence on your machine and runs every script against it, start to finish, in Python and (if PowerShell 7 is installed) PowerShell: auth test, extractor, both checks, Markdown, SharePoint paste, table to CSV, repair and git setup. The fake one is deliberately awkward in the ways real servers were - it hands out results 10 at a time whatever you ask for, leaves the character set off its replies, has a download that fails, an "image" that's really a login page, and attachments with missing or wrong sizes - and every check says what it expected if it fails. Everything happens in a temporary folder and nothing is written into the repo. It takes a minute or two. The same tests run on GitHub for every push and pull request (the badge at the top shows the latest result).
+It starts a fake Confluence on your machine and runs every script against it, start to finish, in Python and (if PowerShell 7 is installed) PowerShell: auth test, extractor, both checks, Markdown, Azure DevOps Wiki layout, SharePoint paste, table to CSV, repair and git setup. `--windows-powershell` runs the PowerShell checks on Windows PowerShell 5.1 instead, which GitHub also does on every change. The fake one is deliberately awkward in the ways real servers were - it hands out results 10 at a time whatever you ask for, leaves the character set off its replies, has a download that fails, an "image" that's really a login page, and attachments with missing or wrong sizes - and every check says what it expected if it fails. Everything happens in a temporary folder and nothing is written into the repo. It takes a minute or two. The same tests run on GitHub for every push and pull request (the badge at the top shows the latest result).
 
 Found a new way a real Confluence misbehaves? Add it to `tests/test_site.json` (and `tests/mock_confluence.py` if it needs new behaviour) with a check in `run_tests.py`, so it stays fixed.
 
