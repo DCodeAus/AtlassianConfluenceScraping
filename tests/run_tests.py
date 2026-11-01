@@ -111,10 +111,19 @@ def run_suite(language, work):
             command = [sys.executable, os.path.join(REPO_DIR, f"{script}.py"), *args]
         else:
             command = [*POWERSHELL, "-File", os.path.join(REPO_DIR, f"{script}.ps1"), *args]
-        result = subprocess.run(
-            command, cwd=work, env={**env, **(extra_env or {})},
-            input=answers + "\n" * 40, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600,
-        )
+        try:
+            result = subprocess.run(
+                command, cwd=work, env={**env, **(extra_env or {})},
+                input=answers + "\n" * 40, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+            )
+        except subprocess.TimeoutExpired as hung:
+            # A script that never finishes is a failure like any other -
+            # say which one, show the last thing it printed (where it got
+            # stuck), and carry on with the rest of the checks.
+            printed = hung.stdout or b""
+            printed = printed.decode("utf-8", "replace") if isinstance(printed, bytes) else printed
+            check(f"{script} finishes (it was stopped after 5 minutes)", False, printed[-800:] or "printed nothing")
+            return printed
         return result.stdout + result.stderr
 
     try:
