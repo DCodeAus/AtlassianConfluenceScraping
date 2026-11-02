@@ -120,7 +120,7 @@ Reading (`GET`) and writing (`POST`) can be gated separately - some accounts hav
 Expected on a first attempt - see Part 3, Step 2's suggestion to read a real page's content back first as a model, rather than guessing at the format from scratch.
 
 **None of this seems worth the effort**
-That's a completely reasonable conclusion. The `confluence_sharepoint_paste` copy-paste workflow already documented in the main README works today, with no tenant-specific fiddling - Power Automate is only worth pursuing if you're migrating enough pages that automating page creation specifically would save real time over that.
+That's a completely reasonable conclusion. The `confluence_sharepoint_paste` copy-paste workflow already documented in [Getting pages into SharePoint](sharepoint.md) works today, with no tenant-specific fiddling - Power Automate is only worth pursuing if you're migrating enough pages that automating page creation specifically would save real time over that.
 
 ---
 

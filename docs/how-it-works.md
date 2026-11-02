@@ -1,6 +1,6 @@
 # How the Confluence Migration Pipeline Works
 
-The picture of how the scripts in this repo fit together, start to finish. For what each step actually does, day-to-day usage, and troubleshooting, see [README.md](README.md) - that's the source of truth; this page just shows the shape of it, and links into README for the detail on each step rather than repeating it, so there's only one place to keep up to date.
+The picture of how the scripts in this repo fit together, start to finish. For what each step actually does, day-to-day usage, and troubleshooting, see the [README](../README.md) and the other pages in this folder - they're the source of truth; this page just shows the shape of it, and links to them for the detail on each step rather than repeating it, so there's only one place to keep up to date.
 
 ```mermaid
 flowchart TD
@@ -38,23 +38,23 @@ flowchart TD
     style Q stroke-dasharray: 5 5
 ```
 
-*(Dashed boxes are the manual steps left - see [Getting pages into SharePoint](README.md#getting-pages-into-sharepoint) and [Pages that are really just a table](README.md#pages-that-are-really-just-a-table) in the README for why, and what a real fix would need.)*
+*(Dashed boxes are the manual steps left - see [Getting pages into SharePoint](sharepoint.md) and [Pages that are really just a table](sharepoint.md#pages-that-are-really-just-a-table) for why, and what a real fix would need.)*
 
-## Stage by stage - see README for the detail
+## Stage by stage
 
-1. **Confirm access works** - [How the auth test works](README.md#how-the-auth-test-works)
-2. **Already got a `confluence_export` folder from before, with garbled characters in it (`Â`, `â€™`)?** Run `repair_garbled_text` on it now - see that entry in [What's in here](README.md#whats-in-here). First time ever running this? Skip straight to step 3, nothing to repair yet.
-3. **Pull everything down** - [Pulling everything down](README.md#pulling-everything-down)
-4. **Classify pages, then convert to Markdown** - [Turning it into Markdown](README.md#turning-it-into-markdown)
-5. **Get pages into Azure DevOps Wiki** - [Getting pages into Azure DevOps Wiki](README.md#getting-pages-into-azure-devops-wiki)
-6. **Get pages into SharePoint** - [Getting pages into SharePoint](README.md#getting-pages-into-sharepoint)
-7. **A page that's really just a table?** - [Pages that are really just a table](README.md#pages-that-are-really-just-a-table) - better off as a SharePoint List
+1. **Confirm access works** - [How the auth test works](extracting.md#how-the-auth-test-works)
+2. **Already got a `confluence_export` folder from before, with garbled characters in it (`Â`, `â€™`)?** Run `repair_garbled_text` on it now - see [Getting started](getting-started.md), step 3. First time ever running this? Skip straight to step 3, nothing to repair yet.
+3. **Pull everything down** - [Pulling everything down](extracting.md#pulling-everything-down)
+4. **Classify pages, then convert to Markdown** - [Converting to Markdown](converting-to-markdown.md)
+5. **Get pages into Azure DevOps Wiki** - [Getting pages into Azure DevOps Wiki](azure-devops-wiki.md)
+6. **Get pages into SharePoint** - [Getting pages into SharePoint](sharepoint.md)
+7. **A page that's really just a table?** - [Pages that are really just a table](sharepoint.md#pages-that-are-really-just-a-table) - better off as a SharePoint List
 
-For the full walkthrough with actual commands in order, see [Getting started - which script, in what order](README.md#getting-started---which-script-in-what-order) in the README.
+For the full walkthrough with actual commands in order, see [Getting started](getting-started.md).
 
 ## Where things actually stand
 
-See [Where things stand](README.md#where-things-stand) in the README - kept in one place so this page can't drift out of sync with it.
+See [Where things stand](../README.md#where-things-stand) in the README - kept in one place so this page can't drift out of sync with it.
 
 ## A couple of things worth remembering
 
