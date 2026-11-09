@@ -1,0 +1,33 @@
+# PSScriptAnalyzer checks the PowerShell scripts for security problems on every
+# pull request, on pushes to main and weekly. GitHub's CodeQL already covers
+# the Python files but can't read PowerShell, so this fills that gap.
+# Only the security rules run (plain-text passwords, Invoke-Expression, weak
+# hashing...), so style warnings don't drown out real problems.
+# Results appear under the repo's Security > Code scanning tab.
+name: Security scan
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 21 * * 0"   # weekly, Monday 8am AEDT
+permissions:
+  contents: read
+jobs:
+  powershell:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # needed to upload results to Code scanning
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/psscriptanalyzer-action@v1.1
+        with:
+          path: .
+          recurse: true
+          includeRule: '"PSAvoidUsingPlainTextForPassword", "PSAvoidUsingConvertToSecureStringWithPlainText", "PSAvoidUsingUsernameAndPasswordParams", "PSUsePSCredentialType", "PSAvoidUsingInvokeExpression", "PSAvoidUsingAllowUnencryptedAuthentication", "PSAvoidUsingBrokenHashAlgorithms", "PSAvoidUsingComputerNameHardcoded"'
+          output: psscriptanalyzer.sarif
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: psscriptanalyzer.sarif
+          category: psscriptanalyzer

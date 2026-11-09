@@ -1,0 +1,12 @@
+# Dependabot keeps the GitHub Actions used by this repo's workflows up to date
+# and opens a pull request when one has a security fix. All updates arrive in
+# one grouped PR per week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
