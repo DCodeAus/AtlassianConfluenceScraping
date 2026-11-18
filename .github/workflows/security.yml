@@ -20,7 +20,7 @@ jobs:
       contents: read
       security-events: write   # needed to upload results to Code scanning
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: microsoft/psscriptanalyzer-action@6b2948b1944407914a58661c49941824d149734f # v1.1
         with:
           path: .
